@@ -34,6 +34,8 @@ UTC = dt.timezone.utc
 DURATION_TIMESTAMP_TOLERANCE_MS = 1000
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
+LEDGER_KINDS = {"provider_cost_bucket", "provider_usage_bucket", "run"}
+LEDGER_STATUSES = {"completed", "failed", "incomplete"}
 SOURCE_TYPES = {
     "manual_attestation",
     "provider_export",
@@ -341,6 +343,13 @@ def validate_ledger_object_field(record: dict[str, Any], path: Path, line_no: in
     return value
 
 
+def validate_ledger_required_string_field(record: dict[str, Any], path: Path, line_no: int, field: str) -> str:
+    value = record.get(field)
+    if not isinstance(value, str) or not value.strip():
+        raise ledger_record_error(path, line_no, f"field {field!r} must be a non-empty string")
+    return value
+
+
 def validate_ledger_time_field(record: dict[str, Any], path: Path, line_no: int, field: str) -> dt.datetime:
     value = record.get(field)
     if not isinstance(value, str) or not value:
@@ -473,6 +482,25 @@ def validate_ledger_schema_version(record: dict[str, Any], path: Path, line_no: 
         )
 
 
+def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -> None:
+    validate_ledger_required_string_field(record, path, line_no, "record_id")
+    kind = validate_ledger_required_string_field(record, path, line_no, "kind")
+    if kind not in LEDGER_KINDS:
+        raise ledger_record_error(path, line_no, f"field 'kind' has unsupported value {kind!r}")
+    validate_ledger_required_string_field(record, path, line_no, "provider")
+    model = record.get("model")
+    if model is not None and (not isinstance(model, str) or not model.strip()):
+        raise ledger_record_error(path, line_no, "field 'model' must be a non-empty string or null")
+    status = validate_ledger_required_string_field(record, path, line_no, "status")
+    if status not in LEDGER_STATUSES:
+        raise ledger_record_error(path, line_no, f"field 'status' has unsupported value {status!r}")
+    run_id = record.get("run_id")
+    if run_id is not None:
+        if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
+            raise ledger_record_error(path, line_no, "field 'run_id' must be null or a valid run id")
+    validate_ledger_optional_nonnegative_int(record, path, line_no, "exit_code")
+
+
 def validate_ledger_duration(
     record: dict[str, Any],
     started_at: dt.datetime,
@@ -503,6 +531,7 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if stored_hash != expected_hash:
         raise CliError(f"invalid ledger record at {path}:{line_no}: record_hash mismatch")
     validate_ledger_schema_version(record, path, line_no)
+    validate_ledger_metadata(record, path, line_no)
     started_at = validate_ledger_time_field(record, path, line_no, "started_at")
     finished_at = validate_ledger_time_field(record, path, line_no, "finished_at")
     if finished_at < started_at:
@@ -632,9 +661,11 @@ def validate_run_id(run_id: str) -> str:
     return run_id
 
 
-def normalize_model(model: str | None) -> str | None:
+def normalize_model(model: Any) -> str | None:
     if model is None:
         return None
+    if not isinstance(model, str):
+        raise CliError("model must be a string or null")
     model = model.strip()
     return model or None
 

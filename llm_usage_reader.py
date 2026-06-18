@@ -44,6 +44,16 @@ SOURCE_TYPES = {
 }
 BILLING_SOURCES = {"provider_cost_api", "provider_export", "manual_attestation", "unavailable"}
 MANUAL_SOURCE_TYPES = {"manual_attestation", "unavailable"}
+USAGE_VALUE_FIELDS = [
+    "input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "input_audio_tokens",
+    "output_audio_tokens",
+    "billed_tokens",
+    "requests",
+    "tokens_consumed",
+]
 
 
 class CliError(Exception):
@@ -374,6 +384,10 @@ def validate_ledger_billing(billing: dict[str, Any], path: Path, line_no: int) -
             raise ledger_record_error(path, line_no, "field 'billing.currency' must be usd when actual_cost_usd is set")
 
 
+def usage_has_values(usage: dict[str, Any]) -> bool:
+    return any(usage.get(field) is not None for field in USAGE_VALUE_FIELDS)
+
+
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if not isinstance(record, dict):
         raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
@@ -395,16 +409,9 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     source = validate_ledger_object_field(record, path, line_no, "source")
     validate_ledger_source(source, path, line_no)
     validate_ledger_billing(billing, path, line_no)
-    for field in [
-        "input_tokens",
-        "output_tokens",
-        "cached_input_tokens",
-        "input_audio_tokens",
-        "output_audio_tokens",
-        "billed_tokens",
-        "requests",
-        "tokens_consumed",
-    ]:
+    if source.get("type") == "unavailable" and usage_has_values(usage):
+        raise ledger_record_error(path, line_no, "usage values must be null when source.type is unavailable")
+    for field in USAGE_VALUE_FIELDS:
         validate_ledger_optional_nonnegative_int(usage, path, line_no, field, f"usage.{field}")
 
 
@@ -539,6 +546,9 @@ def make_record(
     source = {"type": source_type}
     if source_detail:
         source.update(source_detail)
+    usage = usage or blank_usage()
+    if source_type == "unavailable" and usage_has_values(usage):
+        raise CliError("usage values cannot be set when --source is unavailable")
     record = {
         "schema_version": SCHEMA_VERSION,
         "record_id": new_id("rec"),
@@ -551,7 +561,7 @@ def make_record(
         "duration_ms": duration_ms,
         "status": status,
         "exit_code": exit_code,
-        "usage": usage or blank_usage(),
+        "usage": usage,
         "billing": billing
         or {
             "actual_cost_usd": None,

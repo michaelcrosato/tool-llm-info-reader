@@ -534,6 +534,61 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "source.file_sha256"):
                 tool.read_ledger(data_dir)
 
+    def test_read_ledger_rejects_hash_valid_local_recorder_with_usage_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["source"] = {"type": "local_recorder", "duration_clock": "monotonic"}
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "source.type is local_recorder"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_local_recorder_with_billing_values(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--provider",
+                "local",
+                "--model",
+                "test",
+                "--",
+                sys.executable,
+                "--version",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["billing"] = {
+                "actual_cost_usd": "0.12",
+                "currency": "usd",
+                "source": "manual_attestation",
+            }
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "billing.source"):
+                tool.read_ledger(data_dir)
+
     def test_read_ledger_rejects_hash_valid_pricing_estimate_actual_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

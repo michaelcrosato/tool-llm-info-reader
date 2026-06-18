@@ -450,9 +450,19 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     billing = validate_ledger_object_field(record, path, line_no, "billing")
     source = validate_ledger_object_field(record, path, line_no, "source")
     validate_ledger_source(source, path, line_no)
-    validate_ledger_billing(billing, source["type"], path, line_no)
-    if source.get("type") == "unavailable" and usage_has_values(usage):
+    source_type = source["type"]
+    validate_ledger_billing(billing, source_type, path, line_no)
+    if source_type == "unavailable" and usage_has_values(usage):
         raise ledger_record_error(path, line_no, "usage values must be null when source.type is unavailable")
+    if source_type == "local_recorder":
+        if usage_has_values(usage):
+            raise ledger_record_error(path, line_no, "usage values must be null when source.type is local_recorder")
+        if billing.get("source") != "unavailable":
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'billing.source' must be unavailable when source.type is local_recorder",
+            )
     validate_ledger_usage(usage, path, line_no)
 
 

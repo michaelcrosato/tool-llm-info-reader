@@ -49,6 +49,12 @@ MANUAL_SOURCE_TYPES = {"manual_attestation", "unavailable"}
 MANUAL_BILLING_SOURCES = BILLING_SOURCES - PROVIDER_BILLING_SOURCES
 PROVIDER_EXPORT_STRING_FIELDS = ("file", "provider_object")
 PROVIDER_EXPORT_SHA256_FIELDS = ("file_sha256", "import_key")
+TOKEN_COMPONENT_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "input_audio_tokens",
+    "output_audio_tokens",
+)
 USAGE_VALUE_FIELDS = [
     "input_tokens",
     "output_tokens",
@@ -412,6 +418,18 @@ def usage_has_values(usage: dict[str, Any]) -> bool:
     return any(usage.get(field) is not None for field in USAGE_VALUE_FIELDS)
 
 
+def validate_ledger_usage(usage: dict[str, Any], path: Path, line_no: int) -> None:
+    for field in USAGE_VALUE_FIELDS:
+        validate_ledger_optional_nonnegative_int(usage, path, line_no, field, f"usage.{field}")
+    component_total = sum_ints(*(usage.get(field) for field in TOKEN_COMPONENT_FIELDS))
+    if component_total is not None and usage.get("tokens_consumed") != component_total:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'usage.tokens_consumed' must equal the sum of input/output/audio token fields",
+        )
+
+
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if not isinstance(record, dict):
         raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
@@ -435,8 +453,7 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     validate_ledger_billing(billing, source["type"], path, line_no)
     if source.get("type") == "unavailable" and usage_has_values(usage):
         raise ledger_record_error(path, line_no, "usage values must be null when source.type is unavailable")
-    for field in USAGE_VALUE_FIELDS:
-        validate_ledger_optional_nonnegative_int(usage, path, line_no, field, f"usage.{field}")
+    validate_ledger_usage(usage, path, line_no)
 
 
 def read_ledger(data_dir: Path) -> list[dict[str, Any]]:

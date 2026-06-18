@@ -85,6 +85,14 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_summary_rejects_invalid_last_durations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            for duration in ["NaN", "Infinity", "0", "-1h", "1e1000000d"]:
+                with self.subTest(duration=duration):
+                    code = self.run_cli(data_dir, "summary", f"--last={duration}")
+                    self.assertEqual(code, 2)
+
     def test_read_ledger_rejects_hash_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

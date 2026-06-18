@@ -20,7 +20,7 @@ import subprocess
 import sys
 import time
 import uuid
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, DecimalException, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -86,13 +86,25 @@ def parse_duration(value: str) -> dt.timedelta:
         number = raw[:-1]
         try:
             amount = Decimal(number)
-        except InvalidOperation as exc:
+            seconds = amount * suffixes[suffix]
+        except DecimalException as exc:
             raise CliError(f"invalid duration {value!r}") from exc
-        return dt.timedelta(seconds=float(amount * suffixes[suffix]))
+        return duration_from_decimal(seconds, value)
     try:
-        return dt.timedelta(seconds=float(Decimal(raw)))
-    except InvalidOperation as exc:
+        return duration_from_decimal(Decimal(raw), value)
+    except DecimalException as exc:
         raise CliError(f"invalid duration {value!r}; examples: 30m, 24h, 7d") from exc
+
+
+def duration_from_decimal(seconds: Decimal, original: str) -> dt.timedelta:
+    if not seconds.is_finite():
+        raise CliError(f"invalid duration {original!r}; must be finite")
+    if seconds <= 0:
+        raise CliError(f"invalid duration {original!r}; must be > 0")
+    try:
+        return dt.timedelta(seconds=float(seconds))
+    except (OverflowError, ValueError) as exc:
+        raise CliError(f"invalid duration {original!r}; too large") from exc
 
 
 def positive_int_or_none(value: str | None, name: str) -> int | None:

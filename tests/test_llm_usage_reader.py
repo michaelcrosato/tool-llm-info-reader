@@ -843,6 +843,45 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(tool.scan_inbox_once(args), 0)
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
 
+    def test_watch_marks_recognized_duplicate_exports_as_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            payload = {
+                "object": "page",
+                "data": [
+                    {
+                        "object": "bucket",
+                        "start_time": 1781740800,
+                        "end_time": 1781827200,
+                        "results": [
+                            {
+                                "object": "organization.usage.completions.result",
+                                "input_tokens": 7,
+                                "output_tokens": 3,
+                                "num_model_requests": 1,
+                                "model": "gpt-5.4-mini",
+                            }
+                        ],
+                    }
+                ],
+            }
+            source = root / "source.json"
+            duplicate = inbox / "duplicate.json"
+            source.write_text(json.dumps(payload), encoding="utf-8")
+            duplicate.write_text(json.dumps(payload), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-openai-usage", "--file", str(source)), 0)
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+            self.assertEqual(tool.scan_inbox_once(args), 0)
+            self.assertEqual(tool.scan_inbox_once(args), 0)
+
+            state = tool.load_imported_state(data_dir)
+            self.assertEqual(state["files"][str(duplicate)]["records"], 0)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
     def test_watch_rejects_invalid_intervals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

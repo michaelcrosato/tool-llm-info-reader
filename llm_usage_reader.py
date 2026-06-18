@@ -1098,11 +1098,11 @@ def classify_provider_export(payload: Any) -> str | None:
     return None
 
 
-def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) -> int:
+def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) -> tuple[bool, int]:
     payload = load_json_file(path)
     kind = classify_provider_export(payload)
     if kind is None:
-        return 0
+        return False, 0
     fake_args = argparse.Namespace(data_dir=data_dir, file=path, default_model=None, notes=notes)
     before = len(read_ledger(data_dir))
     if kind in {"openai_usage", "mixed"}:
@@ -1110,7 +1110,7 @@ def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) ->
     if kind in {"openai_costs", "mixed"}:
         command_import_openai_costs(fake_args)
     after = len(read_ledger(data_dir))
-    return max(0, after - before)
+    return True, max(0, after - before)
 
 
 def scan_inbox_once(args: argparse.Namespace) -> int:
@@ -1124,8 +1124,8 @@ def scan_inbox_once(args: argparse.Namespace) -> int:
         previous = state["files"].get(str(path))
         if previous and previous.get("sha256") == digest:
             continue
-        appended = import_file_by_type(args.data_dir, path, notes=args.notes)
-        if appended:
+        recognized, appended = import_file_by_type(args.data_dir, path, notes=args.notes)
+        if recognized:
             imported += appended
             state["files"][str(path)] = {
                 "sha256": digest,

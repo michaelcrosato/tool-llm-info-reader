@@ -31,6 +31,7 @@ DEFAULT_DATA_DIR = Path("data")
 DEFAULT_LEDGER = Path("usage-ledger.jsonl")
 DEFAULT_LOCK = Path("usage-ledger.lock")
 UTC = dt.timezone.utc
+DURATION_TIMESTAMP_TOLERANCE_MS = 1000
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 SOURCE_TYPES = {
@@ -453,6 +454,26 @@ def validate_ledger_usage(usage: dict[str, Any], path: Path, line_no: int) -> No
         )
 
 
+def validate_ledger_duration(
+    record: dict[str, Any],
+    started_at: dt.datetime,
+    finished_at: dt.datetime,
+    path: Path,
+    line_no: int,
+) -> None:
+    validate_ledger_optional_nonnegative_int(record, path, line_no, "duration_ms")
+    duration_ms = record.get("duration_ms")
+    if duration_ms is None:
+        raise ledger_record_error(path, line_no, "field 'duration_ms' must be a non-negative integer")
+    wall_duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+    if abs(duration_ms - wall_duration_ms) > DURATION_TIMESTAMP_TOLERANCE_MS:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'duration_ms' must match started_at and finished_at within 1000ms",
+        )
+
+
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if not isinstance(record, dict):
         raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
@@ -466,9 +487,7 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     finished_at = validate_ledger_time_field(record, path, line_no, "finished_at")
     if finished_at < started_at:
         raise ledger_record_error(path, line_no, "finished_at cannot be earlier than started_at")
-    validate_ledger_optional_nonnegative_int(record, path, line_no, "duration_ms")
-    if record.get("duration_ms") is None:
-        raise ledger_record_error(path, line_no, "field 'duration_ms' must be a non-negative integer")
+    validate_ledger_duration(record, started_at, finished_at, path, line_no)
     usage = validate_ledger_object_field(record, path, line_no, "usage")
     billing = validate_ledger_object_field(record, path, line_no, "billing")
     source = validate_ledger_object_field(record, path, line_no, "source")

@@ -588,6 +588,42 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(run_state["status"], "completed")
             self.assertEqual(run_state["record_id"], records[0]["record_id"])
 
+    def test_finish_rejects_non_object_run_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            runs_dir = data_dir / "runs"
+            runs_dir.mkdir(parents=True)
+            (runs_dir / "bad.json").write_text("[1]\n", encoding="utf-8")
+
+            code = self.run_cli(data_dir, "finish", "--run-id", "bad", "--finished-at", "2026-06-18T20:01:00Z")
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_finish_rejects_mismatched_run_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            runs_dir = data_dir / "runs"
+            runs_dir.mkdir(parents=True)
+            (runs_dir / "bad.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": tool.SCHEMA_VERSION,
+                        "run_id": "other",
+                        "provider": "openai",
+                        "model": "gpt-5.4",
+                        "started_at": "2026-06-18T20:00:00Z",
+                        "status": "running",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(data_dir, "finish", "--run-id", "bad", "--finished-at", "2026-06-18T20:01:00Z")
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_direct_openai_cost_import_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

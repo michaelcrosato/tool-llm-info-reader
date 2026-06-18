@@ -216,6 +216,19 @@ def load_json_file(path: Path) -> Any:
         raise CliError(f"invalid JSON in {path}: {exc}") from exc
 
 
+def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
+    run = load_json_file(path)
+    if not isinstance(run, dict):
+        raise CliError(f"invalid run state at {path}: expected object")
+    if run.get("run_id") != run_id:
+        raise CliError(f"invalid run state at {path}: run_id mismatch")
+    if run.get("status") not in {"running", "completed"}:
+        raise CliError(f"invalid run state at {path}: status must be running or completed")
+    if run.get("started_at") is None:
+        raise CliError(f"invalid run state at {path}: missing started_at")
+    return run
+
+
 def atomic_write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -494,7 +507,7 @@ def command_finish(args: argparse.Namespace) -> int:
     run_id = validate_run_id(args.run_id)
     with exclusive_file_lock(run_lock_path(data_dir, run_id)):
         run_path = data_dir / "runs" / f"{run_id}.json"
-        run = load_json_file(run_path)
+        run = load_run_state(run_path, run_id)
         if run.get("status") == "completed":
             raise CliError(f"run is already completed: {args.run_id}")
 

@@ -46,6 +46,13 @@ def to_iso(value: dt.datetime) -> str:
     return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def epoch_seconds_to_utc(seconds: int, error_message: str) -> dt.datetime:
+    try:
+        return dt.datetime.fromtimestamp(seconds, tz=UTC)
+    except (OverflowError, OSError, ValueError) as exc:
+        raise CliError(error_message) from exc
+
+
 def parse_time(value: str | None, *, default: dt.datetime | None = None) -> dt.datetime:
     if value is None:
         if default is None:
@@ -58,10 +65,10 @@ def parse_time(value: str | None, *, default: dt.datetime | None = None) -> dt.d
     if raw.lower() == "now":
         return now_utc()
     if raw.isdigit():
-        try:
-            return dt.datetime.fromtimestamp(int(raw), tz=UTC)
-        except (OverflowError, OSError, ValueError) as exc:
-            raise CliError(f"invalid time {value!r}; use ISO-8601, YYYY-MM-DD, epoch seconds, or now") from exc
+        return epoch_seconds_to_utc(
+            int(raw),
+            f"invalid time {value!r}; use ISO-8601, YYYY-MM-DD, epoch seconds, or now",
+        )
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
@@ -615,7 +622,10 @@ def openai_bucket_times(bucket: dict[str, Any]) -> tuple[dt.datetime, dt.datetim
     end = strict_required_int(bucket, "end_time", "OpenAI bucket")
     if end <= start:
         raise CliError("OpenAI bucket end_time must be after start_time")
-    return dt.datetime.fromtimestamp(start, tz=UTC), dt.datetime.fromtimestamp(end, tz=UTC)
+    return (
+        epoch_seconds_to_utc(start, "OpenAI bucket field 'start_time' is outside supported timestamp range"),
+        epoch_seconds_to_utc(end, "OpenAI bucket field 'end_time' is outside supported timestamp range"),
+    )
 
 
 def strict_required_int(mapping: dict[str, Any], field: str, label: str) -> int:

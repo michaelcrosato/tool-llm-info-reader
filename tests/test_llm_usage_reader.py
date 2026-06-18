@@ -757,6 +757,15 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(tool.scan_inbox_once(args), 0)
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
 
+    def test_watch_rejects_invalid_intervals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            inbox = Path(tmp) / "inbox"
+            for interval in ["NaN", "Infinity", "0", "-1"]:
+                with self.subTest(interval=interval):
+                    code = self.run_cli(data_dir, "watch", "--once", "--inbox", str(inbox), f"--interval={interval}")
+                    self.assertEqual(code, 2)
+
     def test_wrap_strips_separator(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

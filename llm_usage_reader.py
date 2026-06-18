@@ -13,6 +13,7 @@ from contextlib import contextmanager
 import datetime as dt
 import hashlib
 import json
+import math
 import os
 import platform
 import re
@@ -1110,6 +1111,8 @@ def scan_inbox_once(args: argparse.Namespace) -> int:
 
 
 def command_watch(args: argparse.Namespace) -> int:
+    if not math.isfinite(args.interval) or args.interval <= 0:
+        raise CliError("--interval must be a finite number > 0")
     print(f"Watching {args.inbox} for provider export JSON. Ctrl+C to stop.")
     while True:
         imported = scan_inbox_once(args)

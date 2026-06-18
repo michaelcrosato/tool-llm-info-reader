@@ -47,6 +47,9 @@ BILLING_SOURCES = {"provider_cost_api", "provider_export", "manual_attestation",
 PROVIDER_BILLING_SOURCES = {"provider_cost_api", "provider_export"}
 MANUAL_SOURCE_TYPES = {"manual_attestation", "unavailable"}
 MANUAL_BILLING_SOURCES = BILLING_SOURCES - PROVIDER_BILLING_SOURCES
+ADAPTER_EVIDENCE_SOURCE_TYPES = {"native_telemetry", "vendor_session_store", "proxy_log"}
+ADAPTER_EVIDENCE_STRING_FIELDS = ("adapter", "adapter_version")
+ADAPTER_EVIDENCE_SHA256_FIELDS = ("evidence_sha256",)
 PROVIDER_EXPORT_STRING_FIELDS = ("file", "provider_object")
 PROVIDER_EXPORT_SHA256_FIELDS = ("file_sha256", "import_key")
 TOKEN_COMPONENT_FIELDS = (
@@ -395,6 +398,23 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
                     path,
                     line_no,
                     f"field 'source.{field}' must be a sha256 hex string for provider_export",
+                )
+    if source_type in ADAPTER_EVIDENCE_SOURCE_TYPES:
+        for field in ADAPTER_EVIDENCE_STRING_FIELDS:
+            value = source.get(field)
+            if not isinstance(value, str) or not value:
+                raise ledger_record_error(
+                    path,
+                    line_no,
+                    f"field 'source.{field}' must be a non-empty string for {source_type}",
+                )
+        for field in ADAPTER_EVIDENCE_SHA256_FIELDS:
+            value = source.get(field)
+            if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
+                raise ledger_record_error(
+                    path,
+                    line_no,
+                    f"field 'source.{field}' must be a sha256 hex string for {source_type}",
                 )
 
 

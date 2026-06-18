@@ -278,6 +278,8 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
     pending = list(records)
     with exclusive_file_lock(ledger_lock_path(data_dir)):
         seen_import_keys = existing_import_keys(path)
+        for index, record in enumerate(pending, 1):
+            validate_ledger_record(record, path, index)
         count = 0
         with path.open("a", encoding="utf-8", newline="\n") as fh:
             for record in pending:

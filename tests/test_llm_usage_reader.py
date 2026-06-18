@@ -269,6 +269,15 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(ledger.read_text(encoding="utf-8"), "{not-json}\n")
 
+    def test_append_ledger_rejects_invalid_pending_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+
+            with self.assertRaisesRegex(tool.CliError, "missing record_hash"):
+                tool.append_ledger(data_dir, [{"bad": "record"}])
+
+            self.assertFalse(tool.ledger_path(data_dir).exists())
+
     def test_summary_rejects_invalid_last_durations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

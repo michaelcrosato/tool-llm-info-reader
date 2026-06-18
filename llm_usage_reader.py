@@ -134,6 +134,10 @@ def ledger_lock_path(data_dir: Path) -> Path:
     return data_dir / DEFAULT_LOCK
 
 
+def run_lock_path(data_dir: Path, run_id: str) -> Path:
+    return data_dir / "runs" / f"{run_id}.lock"
+
+
 @contextmanager
 def exclusive_file_lock(path: Path) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -464,38 +468,39 @@ def command_start(args: argparse.Namespace) -> int:
 def command_finish(args: argparse.Namespace) -> int:
     data_dir = args.data_dir
     run_id = validate_run_id(args.run_id)
-    run_path = data_dir / "runs" / f"{run_id}.json"
-    run = load_json_file(run_path)
-    if run.get("status") == "completed":
-        raise CliError(f"run is already completed: {args.run_id}")
+    with exclusive_file_lock(run_lock_path(data_dir, run_id)):
+        run_path = data_dir / "runs" / f"{run_id}.json"
+        run = load_json_file(run_path)
+        if run.get("status") == "completed":
+            raise CliError(f"run is already completed: {args.run_id}")
 
-    started_at = parse_time(run.get("started_at"))
-    finished_at = parse_time(args.finished_at, default=now_utc())
-    if finished_at < started_at:
-        raise CliError("finished time cannot be earlier than started time")
+        started_at = parse_time(run.get("started_at"))
+        finished_at = parse_time(args.finished_at, default=now_utc())
+        if finished_at < started_at:
+            raise CliError("finished time cannot be earlier than started time")
 
-    provider = args.provider or run.get("provider") or "unknown"
-    model = normalize_model(args.model) or normalize_model(run.get("model"))
-    record = make_record(
-        kind="run",
-        provider=provider,
-        model=model,
-        started_at=started_at,
-        finished_at=finished_at,
-        usage=make_usage(args),
-        billing=make_billing(args),
-        source_type=args.source,
-        source_detail={"run_file": str(run_path)},
-        status="completed",
-        run_id=run_id,
-        exit_code=positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None,
-        notes=args.notes or run.get("notes"),
-    )
-    append_ledger(data_dir, [record])
-    run["status"] = "completed"
-    run["finished_at"] = record["finished_at"]
-    run["record_id"] = record["record_id"]
-    atomic_write_json(run_path, run)
+        provider = args.provider or run.get("provider") or "unknown"
+        model = normalize_model(args.model) or normalize_model(run.get("model"))
+        record = make_record(
+            kind="run",
+            provider=provider,
+            model=model,
+            started_at=started_at,
+            finished_at=finished_at,
+            usage=make_usage(args),
+            billing=make_billing(args),
+            source_type=args.source,
+            source_detail={"run_file": str(run_path)},
+            status="completed",
+            run_id=run_id,
+            exit_code=positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None,
+            notes=args.notes or run.get("notes"),
+        )
+        append_ledger(data_dir, [record])
+        run["status"] = "completed"
+        run["finished_at"] = record["finished_at"]
+        run["record_id"] = record["record_id"]
+        atomic_write_json(run_path, run)
     print(json.dumps({"appended": 1, "record_id": record["record_id"], "ledger": str(ledger_path(data_dir))}, indent=2))
     return 0
 

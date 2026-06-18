@@ -243,6 +243,32 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_rejects_append_to_invalid_existing_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            ledger = tool.ledger_path(data_dir)
+            ledger.write_text("{not-json}\n", encoding="utf-8")
+
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "10",
+                "--output-tokens",
+                "5",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(ledger.read_text(encoding="utf-8"), "{not-json}\n")
+
     def test_summary_rejects_invalid_last_durations(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

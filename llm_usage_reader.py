@@ -274,7 +274,7 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
     path = ledger_path(data_dir)
     pending = list(records)
     with exclusive_file_lock(ledger_lock_path(data_dir)):
-        seen_import_keys = existing_import_keys(path) if any(import_key(record) for record in pending) else set()
+        seen_import_keys = existing_import_keys(path)
         count = 0
         with path.open("a", encoding="utf-8", newline="\n") as fh:
             for record in pending:

@@ -573,6 +573,28 @@ def strict_optional_int(mapping: dict[str, Any], field: str) -> int | None:
     return value
 
 
+def strict_openai_cost_amount(result: dict[str, Any]) -> tuple[str | None, str | None]:
+    amount = result.get("amount")
+    if not isinstance(amount, dict):
+        raise CliError("OpenAI cost result missing amount object")
+
+    value = amount.get("value")
+    currency = amount.get("currency")
+    if value is None:
+        return None, currency
+    if isinstance(value, bool):
+        raise CliError("OpenAI cost amount.value must be a decimal number when present")
+    try:
+        parsed = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise CliError("OpenAI cost amount.value must be a decimal number when present") from exc
+    if not parsed.is_finite():
+        raise CliError("OpenAI cost amount.value must be finite")
+    if parsed < 0:
+        raise CliError("OpenAI cost amount.value must be >= 0")
+    return format(parsed, "f"), currency
+
+
 def normalize_openai_usage_result(result: dict[str, Any]) -> dict[str, Any]:
     input_tokens = strict_optional_int(result, "input_tokens")
     output_tokens = strict_optional_int(result, "output_tokens")
@@ -690,13 +712,7 @@ def command_import_openai_costs(args: argparse.Namespace) -> int:
                 continue
             if result.get("object") != "organization.costs.result":
                 continue
-            amount = result.get("amount") if isinstance(result.get("amount"), dict) else {}
-            value = amount.get("value")
-            currency = amount.get("currency")
-            try:
-                cost = None if value is None else format(Decimal(str(value)), "f")
-            except InvalidOperation:
-                cost = None
+            cost, currency = strict_openai_cost_amount(result)
             records.append(
                 make_record(
                     kind="provider_cost_bucket",

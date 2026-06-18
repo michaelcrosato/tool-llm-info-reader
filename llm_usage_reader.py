@@ -32,6 +32,16 @@ DEFAULT_LEDGER = Path("usage-ledger.jsonl")
 DEFAULT_LOCK = Path("usage-ledger.lock")
 UTC = dt.timezone.utc
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+SOURCE_TYPES = {
+    "manual_attestation",
+    "provider_export",
+    "native_telemetry",
+    "vendor_session_store",
+    "proxy_log",
+    "local_recorder",
+    "unavailable",
+    "legacy_self_reported",
+}
 
 
 class CliError(Exception):
@@ -340,6 +350,14 @@ def validate_ledger_optional_decimal(
         raise ledger_record_error(path, line_no, f"field {name!r} must be a non-negative decimal or null")
 
 
+def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> None:
+    source_type = source.get("type")
+    if not isinstance(source_type, str) or not source_type:
+        raise ledger_record_error(path, line_no, "field 'source.type' must be a non-empty string")
+    if source_type not in SOURCE_TYPES:
+        raise ledger_record_error(path, line_no, f"field 'source.type' has unsupported value {source_type!r}")
+
+
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if not isinstance(record, dict):
         raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
@@ -358,7 +376,8 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
         raise ledger_record_error(path, line_no, "field 'duration_ms' must be a non-negative integer")
     usage = validate_ledger_object_field(record, path, line_no, "usage")
     billing = validate_ledger_object_field(record, path, line_no, "billing")
-    validate_ledger_object_field(record, path, line_no, "source")
+    source = validate_ledger_object_field(record, path, line_no, "source")
+    validate_ledger_source(source, path, line_no)
     for field in [
         "input_tokens",
         "output_tokens",
@@ -538,14 +557,7 @@ def add_usage_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--source",
         default="manual_attestation",
-        choices=[
-            "manual_attestation",
-            "provider_export",
-            "native_telemetry",
-            "vendor_session_store",
-            "proxy_log",
-            "unavailable",
-        ],
+        choices=sorted(SOURCE_TYPES - {"legacy_self_reported", "local_recorder"}),
         help="Where model/usage values came from",
     )
     parser.add_argument(

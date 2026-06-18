@@ -578,10 +578,13 @@ def strict_openai_cost_amount(result: dict[str, Any]) -> tuple[str | None, str |
     if not isinstance(amount, dict):
         raise CliError("OpenAI cost result missing amount object")
 
-    value = amount.get("value")
     currency = amount.get("currency")
-    if value is None:
-        return None, currency
+    if not isinstance(currency, str) or not currency:
+        raise CliError("OpenAI cost amount.currency must be a non-empty string")
+
+    if "value" not in amount or amount["value"] is None:
+        raise CliError("OpenAI cost amount.value is required")
+    value = amount["value"]
     if isinstance(value, bool):
         raise CliError("OpenAI cost amount.value must be a decimal number when present")
     try:

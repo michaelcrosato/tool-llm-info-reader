@@ -440,6 +440,47 @@ class LlmUsageReaderTests(unittest.TestCase):
             records = tool.read_ledger(data_dir)
             self.assertEqual(len(records), 1)
 
+    def test_concurrent_start_creates_one_run(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_concurrent_start"
+            script = Path(tool.__file__).resolve()
+            procs = [
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--data-dir",
+                        str(data_dir),
+                        "start",
+                        "--run-id",
+                        run_id,
+                        "--provider",
+                        "openai",
+                        "--model",
+                        "gpt-5.4",
+                        "--started-at",
+                        "2026-06-18T20:00:00Z",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(6)
+            ]
+            results = [proc.communicate(timeout=10) for proc in procs]
+            success_count = sum(1 for proc in procs if proc.returncode == 0)
+            self.assertEqual(
+                success_count,
+                1,
+                [(proc.returncode, stdout, stderr) for proc, (stdout, stderr) in zip(procs, results)],
+            )
+            run_path = data_dir / "runs" / f"{run_id}.json"
+            self.assertTrue(run_path.exists())
+            run_state = json.loads(run_path.read_text(encoding="utf-8"))
+            self.assertEqual(run_state["run_id"], run_id)
+            self.assertEqual(run_state["status"], "running")
+
     def test_concurrent_finish_appends_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

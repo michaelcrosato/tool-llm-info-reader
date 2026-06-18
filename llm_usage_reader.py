@@ -456,23 +456,24 @@ def command_start(args: argparse.Namespace) -> int:
     data_dir = args.data_dir
     ensure_data_dir(data_dir)
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
-    run_path = data_dir / "runs" / f"{run_id}.json"
-    if run_path.exists():
-        raise CliError(f"run already exists: {run_id}")
-    started_at = parse_time(args.started_at, default=now_utc())
-    run = {
-        "schema_version": SCHEMA_VERSION,
-        "run_id": run_id,
-        "provider": args.provider,
-        "model": normalize_model(args.model),
-        "started_at": to_iso(started_at),
-        "status": "running",
-        "source": {"type": "local_recorder"},
-        "host": system_snapshot(),
-        "notes": args.notes,
-        "created_at": to_iso(now_utc()),
-    }
-    atomic_write_json(run_path, run)
+    with exclusive_file_lock(run_lock_path(data_dir, run_id)):
+        run_path = data_dir / "runs" / f"{run_id}.json"
+        if run_path.exists():
+            raise CliError(f"run already exists: {run_id}")
+        started_at = parse_time(args.started_at, default=now_utc())
+        run = {
+            "schema_version": SCHEMA_VERSION,
+            "run_id": run_id,
+            "provider": args.provider,
+            "model": normalize_model(args.model),
+            "started_at": to_iso(started_at),
+            "status": "running",
+            "source": {"type": "local_recorder"},
+            "host": system_snapshot(),
+            "notes": args.notes,
+            "created_at": to_iso(now_utc()),
+        }
+        atomic_write_json(run_path, run)
     print(json.dumps({"run_id": run_id, "path": str(run_path), "started_at": run["started_at"]}, indent=2))
     return 0
 

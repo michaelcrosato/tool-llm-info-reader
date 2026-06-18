@@ -43,6 +43,7 @@ SOURCE_TYPES = {
     "legacy_self_reported",
 }
 BILLING_SOURCES = {"provider_cost_api", "provider_export", "manual_attestation", "unavailable"}
+MANUAL_SOURCE_TYPES = {"manual_attestation", "unavailable"}
 
 
 class CliError(Exception):
@@ -577,8 +578,8 @@ def add_usage_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--source",
         default="manual_attestation",
-        choices=sorted(SOURCE_TYPES - {"legacy_self_reported", "local_recorder"}),
-        help="Where model/usage values came from",
+        choices=sorted(MANUAL_SOURCE_TYPES),
+        help="Where manually entered model/usage values came from",
     )
     parser.add_argument(
         "--billing-source",

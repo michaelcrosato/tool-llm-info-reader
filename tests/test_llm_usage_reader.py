@@ -139,6 +139,38 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertIn("invalid choice", proc.stderr)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_rejects_provider_export_source_for_manual_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            script = Path(tool.__file__).resolve()
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--data-dir",
+                    str(data_dir),
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "100",
+                    "--source",
+                    "provider_export",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("invalid choice", proc.stderr)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_record_rejects_out_of_range_epoch_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -811,6 +843,50 @@ class LlmUsageReaderTests(unittest.TestCase):
             code = self.run_cli(data_dir, "finish", "--run-id", "bad", "--finished-at", "2026-06-18T20:01:00Z")
 
             self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_finish_rejects_provider_export_source_for_manual_usage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_manual_source"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                ),
+                0,
+            )
+            script = Path(tool.__file__).resolve()
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--data-dir",
+                    str(data_dir),
+                    "finish",
+                    "--run-id",
+                    run_id,
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "100",
+                    "--source",
+                    "provider_export",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("invalid choice", proc.stderr)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
     def test_direct_openai_cost_import_is_idempotent(self) -> None:

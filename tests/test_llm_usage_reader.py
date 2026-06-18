@@ -139,6 +139,38 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertIn("invalid choice", proc.stderr)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_rejects_provider_billing_source_for_manual_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            script = Path(tool.__file__).resolve()
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--data-dir",
+                    str(data_dir),
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--cost-usd",
+                    "0.12",
+                    "--billing-source",
+                    "provider_export",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("invalid choice", proc.stderr)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_record_rejects_provider_export_source_for_manual_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -380,6 +412,33 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(tool.CliError, "billing.source"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_provider_billing_on_manual_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--cost-usd",
+                "0.12",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["billing"]["source"] = "provider_export"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "source.type is provider_export"):
                 tool.read_ledger(data_dir)
 
     def test_read_ledger_rejects_hash_valid_unavailable_source_with_usage_values(self) -> None:

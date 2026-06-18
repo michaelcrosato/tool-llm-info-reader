@@ -43,7 +43,9 @@ SOURCE_TYPES = {
     "legacy_self_reported",
 }
 BILLING_SOURCES = {"provider_cost_api", "provider_export", "manual_attestation", "unavailable"}
+PROVIDER_BILLING_SOURCES = {"provider_cost_api", "provider_export"}
 MANUAL_SOURCE_TYPES = {"manual_attestation", "unavailable"}
+MANUAL_BILLING_SOURCES = BILLING_SOURCES - PROVIDER_BILLING_SOURCES
 USAGE_VALUE_FIELDS = [
     "input_tokens",
     "output_tokens",
@@ -370,12 +372,14 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
         raise ledger_record_error(path, line_no, f"field 'source.type' has unsupported value {source_type!r}")
 
 
-def validate_ledger_billing(billing: dict[str, Any], path: Path, line_no: int) -> None:
+def validate_ledger_billing(billing: dict[str, Any], source_type: str, path: Path, line_no: int) -> None:
     source = billing.get("source")
     if not isinstance(source, str) or not source:
         raise ledger_record_error(path, line_no, "field 'billing.source' must be a non-empty string")
     if source not in BILLING_SOURCES:
         raise ledger_record_error(path, line_no, f"field 'billing.source' has unsupported value {source!r}")
+    if source in PROVIDER_BILLING_SOURCES and source_type != "provider_export":
+        raise ledger_record_error(path, line_no, f"field 'billing.source' cannot be {source!r} unless source.type is provider_export")
     validate_ledger_optional_decimal(billing, path, line_no, "actual_cost_usd", "billing.actual_cost_usd")
     if billing.get("actual_cost_usd") is not None:
         if source == "unavailable":
@@ -408,7 +412,7 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     billing = validate_ledger_object_field(record, path, line_no, "billing")
     source = validate_ledger_object_field(record, path, line_no, "source")
     validate_ledger_source(source, path, line_no)
-    validate_ledger_billing(billing, path, line_no)
+    validate_ledger_billing(billing, source["type"], path, line_no)
     if source.get("type") == "unavailable" and usage_has_values(usage):
         raise ledger_record_error(path, line_no, "usage values must be null when source.type is unavailable")
     for field in USAGE_VALUE_FIELDS:
@@ -487,8 +491,8 @@ def make_usage(args: argparse.Namespace) -> dict[str, Any]:
 def make_billing(args: argparse.Namespace) -> dict[str, Any]:
     cost = decimal_or_none(getattr(args, "cost_usd", None), "--cost-usd")
     billing_source = getattr(args, "billing_source", None)
-    if billing_source is not None and billing_source not in BILLING_SOURCES:
-        raise CliError(f"--billing-source must be one of: {', '.join(sorted(BILLING_SOURCES))}")
+    if billing_source is not None and billing_source not in MANUAL_BILLING_SOURCES:
+        raise CliError(f"--billing-source must be one of: {', '.join(sorted(MANUAL_BILLING_SOURCES))}")
     if cost is not None and billing_source == "unavailable":
         raise CliError("--billing-source cannot be unavailable when --cost-usd is set")
     return {
@@ -593,7 +597,7 @@ def add_usage_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--billing-source",
-        choices=sorted(BILLING_SOURCES),
+        choices=sorted(MANUAL_BILLING_SOURCES),
         help="Where cost data came from",
     )
 

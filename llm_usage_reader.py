@@ -258,6 +258,13 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
     run = load_json_file(path)
     if not isinstance(run, dict):
         raise CliError(f"invalid run state at {path}: expected object")
+    schema_version = run.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise CliError(f"invalid run state at {path}: field 'schema_version' must be an integer")
+    if schema_version != SCHEMA_VERSION:
+        raise CliError(
+            f"invalid run state at {path}: unsupported schema_version {schema_version!r}; expected {SCHEMA_VERSION}"
+        )
     if run.get("run_id") != run_id:
         raise CliError(f"invalid run state at {path}: run_id mismatch")
     if run.get("status") not in {"running", "completed"}:

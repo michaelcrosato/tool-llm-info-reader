@@ -1366,6 +1366,67 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_finish_rejects_unsupported_run_state_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            runs_dir = data_dir / "runs"
+            runs_dir.mkdir(parents=True)
+            (runs_dir / "future.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": tool.SCHEMA_VERSION + 1,
+                        "run_id": "future",
+                        "provider": "openai",
+                        "model": "gpt-5.4",
+                        "started_at": "2026-06-18T20:00:00Z",
+                        "status": "running",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                "future",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_finish_rejects_missing_run_state_schema_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            runs_dir = data_dir / "runs"
+            runs_dir.mkdir(parents=True)
+            (runs_dir / "unversioned.json").write_text(
+                json.dumps(
+                    {
+                        "run_id": "unversioned",
+                        "provider": "openai",
+                        "model": "gpt-5.4",
+                        "started_at": "2026-06-18T20:00:00Z",
+                        "status": "running",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                "unversioned",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_finish_rejects_provider_export_source_for_manual_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

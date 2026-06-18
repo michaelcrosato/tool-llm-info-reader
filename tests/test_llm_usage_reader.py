@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -124,6 +125,62 @@ class LlmUsageReaderTests(unittest.TestCase):
             records = tool.read_ledger(data_dir)
             self.assertEqual(len(records), 1)
             self.assertIn("import_key", records[0]["source"])
+
+    def test_concurrent_openai_usage_import_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 10,
+                                        "output_tokens": 5,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-5.4",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            script = Path(tool.__file__).resolve()
+            procs = [
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--data-dir",
+                        str(data_dir),
+                        "import-openai-usage",
+                        "--file",
+                        str(sample),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(4)
+            ]
+            results = [proc.communicate(timeout=10) for proc in procs]
+            failures = [
+                (proc.returncode, stdout, stderr)
+                for proc, (stdout, stderr) in zip(procs, results)
+                if proc.returncode != 0
+            ]
+            self.assertEqual(failures, [])
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
 
     def test_direct_openai_cost_import_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

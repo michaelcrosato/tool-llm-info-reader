@@ -9,24 +9,25 @@ LLM to invent telemetry.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import datetime as dt
 import hashlib
 import json
 import os
 import platform
-import shutil
 import subprocess
 import sys
 import time
 import uuid
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Iterator
 
 
 SCHEMA_VERSION = 1
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_LEDGER = Path("usage-ledger.jsonl")
+DEFAULT_LOCK = Path("usage-ledger.lock")
 UTC = dt.timezone.utc
 
 
@@ -125,6 +126,34 @@ def ledger_path(data_dir: Path) -> Path:
     return data_dir / DEFAULT_LEDGER
 
 
+def ledger_lock_path(data_dir: Path) -> Path:
+    return data_dir / DEFAULT_LOCK
+
+
+@contextmanager
+def exclusive_file_lock(path: Path) -> Iterator[None]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as fh:
+        if os.name == "nt":
+            import msvcrt
+
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
 def sha256_bytes(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
 
@@ -158,17 +187,18 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
     ensure_data_dir(data_dir)
     path = ledger_path(data_dir)
     pending = list(records)
-    seen_import_keys = existing_import_keys(path) if any(import_key(record) for record in pending) else set()
-    count = 0
-    with path.open("a", encoding="utf-8", newline="\n") as fh:
-        for record in pending:
-            key = import_key(record)
-            if key and key in seen_import_keys:
-                continue
-            fh.write(json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n")
-            if key:
-                seen_import_keys.add(key)
-            count += 1
+    with exclusive_file_lock(ledger_lock_path(data_dir)):
+        seen_import_keys = existing_import_keys(path) if any(import_key(record) for record in pending) else set()
+        count = 0
+        with path.open("a", encoding="utf-8", newline="\n") as fh:
+            for record in pending:
+                key = import_key(record)
+                if key and key in seen_import_keys:
+                    continue
+                fh.write(json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n")
+                if key:
+                    seen_import_keys.add(key)
+                count += 1
     return count
 
 

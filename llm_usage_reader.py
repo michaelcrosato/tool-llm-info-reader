@@ -603,7 +603,9 @@ def command_wrap(args: argparse.Namespace) -> int:
         record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"
         refresh_record_hash(record)
         append_ledger(args.data_dir, [record])
-        raise CliError(f"command not found: {command[0]}") from exc
+        print(json.dumps({"record_id": record["record_id"], "exit_code": exit_code, "ledger": str(ledger_path(args.data_dir))}, indent=2))
+        print(f"command not found: {command[0]}", file=sys.stderr)
+        return exit_code
 
     finished_at = now_utc()
     duration_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)

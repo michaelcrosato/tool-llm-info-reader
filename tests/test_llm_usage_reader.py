@@ -421,6 +421,7 @@ class LlmUsageReaderTests(unittest.TestCase):
             records = tool.read_ledger(data_dir)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["status"], "completed")
+            self.assertEqual(records[0]["record_hash"], tool.record_hash(records[0]))
 
 
 if __name__ == "__main__":

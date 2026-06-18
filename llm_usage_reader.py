@@ -167,6 +167,15 @@ def stable_json_hash(value: Any) -> str:
     return sha256_bytes(data)
 
 
+def record_hash(record: dict[str, Any]) -> str:
+    return stable_json_hash({key: value for key, value in record.items() if key != "record_hash"})
+
+
+def refresh_record_hash(record: dict[str, Any]) -> dict[str, Any]:
+    record["record_hash"] = record_hash(record)
+    return record
+
+
 def load_json_file(path: Path) -> Any:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -371,8 +380,7 @@ def make_record(
         "notes": notes,
         "created_at": to_iso(now_utc()),
     }
-    record["record_hash"] = stable_json_hash({k: v for k, v in record.items() if k != "record_hash"})
-    return record
+    return refresh_record_hash(record)
 
 
 def add_usage_arguments(parser: argparse.ArgumentParser) -> None:
@@ -526,6 +534,7 @@ def command_wrap(args: argparse.Namespace) -> int:
         )
         record["duration_ms"] = duration_ms
         record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"
+        refresh_record_hash(record)
         append_ledger(args.data_dir, [record])
         raise CliError(f"command not found: {command[0]}") from exc
 
@@ -548,6 +557,7 @@ def command_wrap(args: argparse.Namespace) -> int:
     )
     record["duration_ms"] = duration_ms
     record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"
+    refresh_record_hash(record)
     append_ledger(args.data_dir, [record])
     print(json.dumps({"record_id": record["record_id"], "exit_code": exit_code, "ledger": str(ledger_path(args.data_dir))}, indent=2))
     return exit_code

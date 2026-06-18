@@ -610,6 +610,8 @@ def strict_openai_cost_amount(result: dict[str, Any]) -> tuple[str | None, str |
     currency = amount.get("currency")
     if not isinstance(currency, str) or not currency:
         raise CliError("OpenAI cost amount.currency must be a non-empty string")
+    if currency != "usd":
+        raise CliError("OpenAI cost amount.currency must be usd")
 
     if "value" not in amount or amount["value"] is None:
         raise CliError("OpenAI cost amount.value is required")
@@ -754,7 +756,7 @@ def command_import_openai_costs(args: argparse.Namespace) -> int:
                     finished_at=finished_at,
                     usage=blank_usage(),
                     billing={
-                        "actual_cost_usd": cost if currency == "usd" else None,
+                        "actual_cost_usd": cost,
                         "currency": currency,
                         "source": "provider_cost_api",
                         "line_item": result.get("line_item"),

@@ -42,6 +42,7 @@ SOURCE_TYPES = {
     "unavailable",
     "legacy_self_reported",
 }
+BILLING_SOURCES = {"provider_cost_api", "provider_export", "manual_attestation", "unavailable"}
 
 
 class CliError(Exception):
@@ -358,6 +359,20 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
         raise ledger_record_error(path, line_no, f"field 'source.type' has unsupported value {source_type!r}")
 
 
+def validate_ledger_billing(billing: dict[str, Any], path: Path, line_no: int) -> None:
+    source = billing.get("source")
+    if not isinstance(source, str) or not source:
+        raise ledger_record_error(path, line_no, "field 'billing.source' must be a non-empty string")
+    if source not in BILLING_SOURCES:
+        raise ledger_record_error(path, line_no, f"field 'billing.source' has unsupported value {source!r}")
+    validate_ledger_optional_decimal(billing, path, line_no, "actual_cost_usd", "billing.actual_cost_usd")
+    if billing.get("actual_cost_usd") is not None:
+        if source == "unavailable":
+            raise ledger_record_error(path, line_no, "field 'billing.source' cannot be unavailable when actual_cost_usd is set")
+        if billing.get("currency") != "usd":
+            raise ledger_record_error(path, line_no, "field 'billing.currency' must be usd when actual_cost_usd is set")
+
+
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if not isinstance(record, dict):
         raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
@@ -378,6 +393,7 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     billing = validate_ledger_object_field(record, path, line_no, "billing")
     source = validate_ledger_object_field(record, path, line_no, "source")
     validate_ledger_source(source, path, line_no)
+    validate_ledger_billing(billing, path, line_no)
     for field in [
         "input_tokens",
         "output_tokens",
@@ -389,7 +405,6 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
         "tokens_consumed",
     ]:
         validate_ledger_optional_nonnegative_int(usage, path, line_no, field, f"usage.{field}")
-    validate_ledger_optional_decimal(billing, path, line_no, "actual_cost_usd", "billing.actual_cost_usd")
 
 
 def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
@@ -463,10 +478,15 @@ def make_usage(args: argparse.Namespace) -> dict[str, Any]:
 
 def make_billing(args: argparse.Namespace) -> dict[str, Any]:
     cost = decimal_or_none(getattr(args, "cost_usd", None), "--cost-usd")
+    billing_source = getattr(args, "billing_source", None)
+    if billing_source is not None and billing_source not in BILLING_SOURCES:
+        raise CliError(f"--billing-source must be one of: {', '.join(sorted(BILLING_SOURCES))}")
+    if cost is not None and billing_source == "unavailable":
+        raise CliError("--billing-source cannot be unavailable when --cost-usd is set")
     return {
         "actual_cost_usd": cost,
         "currency": "usd" if cost is not None else None,
-        "source": getattr(args, "billing_source", None) or ("manual_attestation" if cost is not None else "unavailable"),
+        "source": billing_source or ("manual_attestation" if cost is not None else "unavailable"),
     }
 
 
@@ -562,7 +582,7 @@ def add_usage_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "--billing-source",
-        choices=["provider_cost_api", "provider_export", "pricing_estimate", "manual_attestation", "unavailable"],
+        choices=sorted(BILLING_SOURCES),
         help="Where cost data came from",
     )
 

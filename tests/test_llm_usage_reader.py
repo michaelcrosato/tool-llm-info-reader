@@ -85,6 +85,60 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_rejects_unavailable_billing_source_with_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--cost-usd",
+                "0.12",
+                "--billing-source",
+                "unavailable",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_record_rejects_pricing_estimate_as_actual_cost_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            script = Path(tool.__file__).resolve()
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--data-dir",
+                    str(data_dir),
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--cost-usd",
+                    "0.12",
+                    "--billing-source",
+                    "pricing_estimate",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            self.assertEqual(proc.returncode, 2)
+            self.assertIn("invalid choice", proc.stderr)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_record_rejects_out_of_range_epoch_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -245,6 +299,33 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(tool.CliError, "unsupported value 'unknown'"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_pricing_estimate_actual_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--cost-usd",
+                "0.12",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["billing"]["source"] = "pricing_estimate"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "billing.source"):
                 tool.read_ledger(data_dir)
 
     def test_import_openai_usage(self) -> None:

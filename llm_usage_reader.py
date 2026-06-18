@@ -45,6 +45,7 @@ SOURCE_TYPES = {
 }
 BILLING_SOURCES = {"provider_cost_api", "provider_export", "manual_attestation", "unavailable"}
 PROVIDER_BILLING_SOURCES = {"provider_cost_api", "provider_export"}
+TRUSTED_EXCLUDED_SOURCE_TYPES = {"manual_attestation", "unavailable", "legacy_self_reported"}
 MANUAL_SOURCE_TYPES = {"manual_attestation", "unavailable"}
 MANUAL_BILLING_SOURCES = BILLING_SOURCES - PROVIDER_BILLING_SOURCES
 ADAPTER_EVIDENCE_SOURCE_TYPES = {"native_telemetry", "vendor_session_store", "proxy_log"}
@@ -1103,7 +1104,7 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
             skipped += 1
             continue
         source_type = str((record.get("source") or {}).get("type") or "unknown")
-        if args.trusted_only and source_type in {"manual_attestation", "unavailable", "legacy_self_reported"}:
+        if args.trusted_only and source_type in TRUSTED_EXCLUDED_SOURCE_TYPES:
             skipped += 1
             continue
         key = (provider, model)
@@ -1123,7 +1124,10 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
         if usage.get("billed_tokens") is not None:
             row["billed_tokens"] += int(usage.get("billed_tokens") or 0)
             row["billed_tokens_known_records"] += 1
-        if billing.get("actual_cost_usd") is not None:
+        billing_source = str(billing.get("source") or "unknown")
+        if billing.get("actual_cost_usd") is not None and (
+            not args.trusted_only or billing_source in PROVIDER_BILLING_SOURCES
+        ):
             row["actual_cost_usd"] = decimal_add(row["actual_cost_usd"], billing.get("actual_cost_usd"))
             row["actual_cost_known_records"] += 1
         row["duration_ms"] += int(record.get("duration_ms") or 0)

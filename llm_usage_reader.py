@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 import time
@@ -29,6 +30,7 @@ DEFAULT_DATA_DIR = Path("data")
 DEFAULT_LEDGER = Path("usage-ledger.jsonl")
 DEFAULT_LOCK = Path("usage-ledger.lock")
 UTC = dt.timezone.utc
+RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 class CliError(Exception):
@@ -329,6 +331,12 @@ def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
 
+def validate_run_id(run_id: str) -> str:
+    if not RUN_ID_PATTERN.fullmatch(run_id):
+        raise CliError("--run-id must be 1-128 chars: letters, numbers, dot, underscore, or hyphen")
+    return run_id
+
+
 def normalize_model(model: str | None) -> str | None:
     if model is None:
         return None
@@ -415,7 +423,7 @@ def add_usage_arguments(parser: argparse.ArgumentParser) -> None:
 def command_start(args: argparse.Namespace) -> int:
     data_dir = args.data_dir
     ensure_data_dir(data_dir)
-    run_id = args.run_id or new_id("run")
+    run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
     run_path = data_dir / "runs" / f"{run_id}.json"
     if run_path.exists():
         raise CliError(f"run already exists: {run_id}")
@@ -439,7 +447,8 @@ def command_start(args: argparse.Namespace) -> int:
 
 def command_finish(args: argparse.Namespace) -> int:
     data_dir = args.data_dir
-    run_path = data_dir / "runs" / f"{args.run_id}.json"
+    run_id = validate_run_id(args.run_id)
+    run_path = data_dir / "runs" / f"{run_id}.json"
     run = load_json_file(run_path)
     if run.get("status") == "completed":
         raise CliError(f"run is already completed: {args.run_id}")
@@ -462,7 +471,7 @@ def command_finish(args: argparse.Namespace) -> int:
         source_type=args.source,
         source_detail={"run_file": str(run_path)},
         status="completed",
-        run_id=args.run_id,
+        run_id=run_id,
         exit_code=positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None,
         notes=args.notes or run.get("notes"),
     )
@@ -491,7 +500,7 @@ def command_record(args: argparse.Namespace) -> int:
         source_type=args.source,
         source_detail=None,
         status=args.status,
-        run_id=args.run_id,
+        run_id=validate_run_id(args.run_id) if args.run_id else None,
         exit_code=positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None,
         notes=args.notes,
     )
@@ -528,7 +537,7 @@ def command_wrap(args: argparse.Namespace) -> int:
             source_type="local_recorder",
             source_detail={"command": command, "duration_clock": "monotonic"},
             status="failed",
-            run_id=args.run_id or new_id("run"),
+            run_id=validate_run_id(args.run_id) if args.run_id else new_id("run"),
             exit_code=exit_code,
             notes=args.notes or str(exc),
         )
@@ -551,7 +560,7 @@ def command_wrap(args: argparse.Namespace) -> int:
         source_type="local_recorder",
         source_detail={"command": command, "duration_clock": "monotonic"},
         status="completed" if exit_code == 0 else "failed",
-        run_id=args.run_id or new_id("run"),
+        run_id=validate_run_id(args.run_id) if args.run_id else new_id("run"),
         exit_code=exit_code,
         notes=args.notes,
     )

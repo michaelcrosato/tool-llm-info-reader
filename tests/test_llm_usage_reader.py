@@ -56,6 +56,15 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(summary["totals"]["tokens_consumed"], 125)
             self.assertEqual(summary["totals"]["billed_tokens"], 125)
 
+    def test_start_rejects_path_traversal_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            code = self.run_cli(data_dir, "start", "--run-id", "../escape")
+            self.assertEqual(code, 2)
+            self.assertFalse((root / "escape.json").exists())
+            self.assertFalse((data_dir / "escape.json").exists())
+
     def test_import_openai_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

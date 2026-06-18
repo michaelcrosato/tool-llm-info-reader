@@ -65,6 +65,26 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertFalse((root / "escape.json").exists())
             self.assertFalse((data_dir / "escape.json").exists())
 
+    def test_record_rejects_non_finite_manual_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--cost-usd",
+                "NaN",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_import_openai_usage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

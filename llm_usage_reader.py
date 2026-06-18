@@ -114,6 +114,8 @@ def decimal_or_none(value: str | None, name: str) -> str | None:
         parsed = Decimal(value)
     except InvalidOperation as exc:
         raise CliError(f"{name} must be a decimal number") from exc
+    if not parsed.is_finite():
+        raise CliError(f"{name} must be finite")
     if parsed < 0:
         raise CliError(f"{name} must be >= 0")
     return format(parsed, "f")

@@ -32,6 +32,7 @@ DEFAULT_LEDGER = Path("usage-ledger.jsonl")
 DEFAULT_LOCK = Path("usage-ledger.lock")
 UTC = dt.timezone.utc
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 SOURCE_TYPES = {
     "manual_attestation",
     "provider_export",
@@ -46,6 +47,8 @@ BILLING_SOURCES = {"provider_cost_api", "provider_export", "manual_attestation",
 PROVIDER_BILLING_SOURCES = {"provider_cost_api", "provider_export"}
 MANUAL_SOURCE_TYPES = {"manual_attestation", "unavailable"}
 MANUAL_BILLING_SOURCES = BILLING_SOURCES - PROVIDER_BILLING_SOURCES
+PROVIDER_EXPORT_STRING_FIELDS = ("file", "provider_object")
+PROVIDER_EXPORT_SHA256_FIELDS = ("file_sha256", "import_key")
 USAGE_VALUE_FIELDS = [
     "input_tokens",
     "output_tokens",
@@ -370,6 +373,23 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
         raise ledger_record_error(path, line_no, "field 'source.type' must be a non-empty string")
     if source_type not in SOURCE_TYPES:
         raise ledger_record_error(path, line_no, f"field 'source.type' has unsupported value {source_type!r}")
+    if source_type == "provider_export":
+        for field in PROVIDER_EXPORT_STRING_FIELDS:
+            value = source.get(field)
+            if not isinstance(value, str) or not value:
+                raise ledger_record_error(
+                    path,
+                    line_no,
+                    f"field 'source.{field}' must be a non-empty string for provider_export",
+                )
+        for field in PROVIDER_EXPORT_SHA256_FIELDS:
+            value = source.get(field)
+            if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
+                raise ledger_record_error(
+                    path,
+                    line_no,
+                    f"field 'source.{field}' must be a sha256 hex string for provider_export",
+                )
 
 
 def validate_ledger_billing(billing: dict[str, Any], source_type: str, path: Path, line_no: int) -> None:

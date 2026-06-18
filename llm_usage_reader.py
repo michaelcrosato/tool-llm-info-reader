@@ -562,29 +562,33 @@ def openai_bucket_times(bucket: dict[str, Any]) -> tuple[dt.datetime, dt.datetim
     return dt.datetime.fromtimestamp(start, tz=UTC), dt.datetime.fromtimestamp(end, tz=UTC)
 
 
-def coerce_int(value: Any) -> int | None:
-    if value is None:
+def strict_optional_int(mapping: dict[str, Any], field: str) -> int | None:
+    if field not in mapping or mapping[field] is None:
         return None
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    return parsed if parsed >= 0 else None
+    value = mapping[field]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CliError(f"OpenAI usage field {field!r} must be a non-negative integer when present")
+    if value < 0:
+        raise CliError(f"OpenAI usage field {field!r} must be >= 0")
+    return value
 
 
 def normalize_openai_usage_result(result: dict[str, Any]) -> dict[str, Any]:
-    input_tokens = coerce_int(result.get("input_tokens"))
-    output_tokens = coerce_int(result.get("output_tokens"))
-    input_audio_tokens = coerce_int(result.get("input_audio_tokens"))
-    output_audio_tokens = coerce_int(result.get("output_audio_tokens"))
+    input_tokens = strict_optional_int(result, "input_tokens")
+    output_tokens = strict_optional_int(result, "output_tokens")
+    input_audio_tokens = strict_optional_int(result, "input_audio_tokens")
+    output_audio_tokens = strict_optional_int(result, "output_audio_tokens")
+    requests = strict_optional_int(result, "num_model_requests")
+    if requests is None:
+        requests = strict_optional_int(result, "num_requests")
     return {
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
-        "cached_input_tokens": coerce_int(result.get("input_cached_tokens")),
+        "cached_input_tokens": strict_optional_int(result, "input_cached_tokens"),
         "input_audio_tokens": input_audio_tokens,
         "output_audio_tokens": output_audio_tokens,
         "billed_tokens": None,
-        "requests": coerce_int(result.get("num_model_requests")) or coerce_int(result.get("num_requests")),
+        "requests": requests,
         "tokens_consumed": sum_ints(input_tokens, output_tokens, input_audio_tokens, output_audio_tokens),
     }
 

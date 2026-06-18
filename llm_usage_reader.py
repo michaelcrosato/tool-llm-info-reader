@@ -283,6 +283,63 @@ def existing_import_keys(path: Path) -> set[str]:
     return keys
 
 
+def ledger_record_error(path: Path, line_no: int, message: str) -> CliError:
+    return CliError(f"invalid ledger record at {path}:{line_no}: {message}")
+
+
+def validate_ledger_object_field(record: dict[str, Any], path: Path, line_no: int, field: str) -> dict[str, Any]:
+    value = record.get(field)
+    if not isinstance(value, dict):
+        raise ledger_record_error(path, line_no, f"field {field!r} must be object")
+    return value
+
+
+def validate_ledger_time_field(record: dict[str, Any], path: Path, line_no: int, field: str) -> dt.datetime:
+    value = record.get(field)
+    if not isinstance(value, str) or not value:
+        raise ledger_record_error(path, line_no, f"field {field!r} must be a non-empty time string")
+    try:
+        return parse_time(value)
+    except CliError as exc:
+        raise ledger_record_error(path, line_no, f"field {field!r} is invalid: {exc}") from exc
+
+
+def validate_ledger_optional_nonnegative_int(
+    mapping: dict[str, Any],
+    path: Path,
+    line_no: int,
+    field: str,
+    display_field: str | None = None,
+) -> None:
+    value = mapping.get(field)
+    if value is None:
+        return
+    name = display_field or field
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ledger_record_error(path, line_no, f"field {name!r} must be a non-negative integer or null")
+
+
+def validate_ledger_optional_decimal(
+    mapping: dict[str, Any],
+    path: Path,
+    line_no: int,
+    field: str,
+    display_field: str | None = None,
+) -> None:
+    value = mapping.get(field)
+    if value is None:
+        return
+    name = display_field or field
+    if isinstance(value, bool):
+        raise ledger_record_error(path, line_no, f"field {name!r} must be a non-negative decimal or null")
+    try:
+        parsed = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ledger_record_error(path, line_no, f"field {name!r} must be a non-negative decimal or null") from exc
+    if not parsed.is_finite() or parsed < 0:
+        raise ledger_record_error(path, line_no, f"field {name!r} must be a non-negative decimal or null")
+
+
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if not isinstance(record, dict):
         raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
@@ -292,6 +349,28 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     expected_hash = record_hash(record)
     if stored_hash != expected_hash:
         raise CliError(f"invalid ledger record at {path}:{line_no}: record_hash mismatch")
+    started_at = validate_ledger_time_field(record, path, line_no, "started_at")
+    finished_at = validate_ledger_time_field(record, path, line_no, "finished_at")
+    if finished_at < started_at:
+        raise ledger_record_error(path, line_no, "finished_at cannot be earlier than started_at")
+    validate_ledger_optional_nonnegative_int(record, path, line_no, "duration_ms")
+    if record.get("duration_ms") is None:
+        raise ledger_record_error(path, line_no, "field 'duration_ms' must be a non-negative integer")
+    usage = validate_ledger_object_field(record, path, line_no, "usage")
+    billing = validate_ledger_object_field(record, path, line_no, "billing")
+    validate_ledger_object_field(record, path, line_no, "source")
+    for field in [
+        "input_tokens",
+        "output_tokens",
+        "cached_input_tokens",
+        "input_audio_tokens",
+        "output_audio_tokens",
+        "billed_tokens",
+        "requests",
+        "tokens_consumed",
+    ]:
+        validate_ledger_optional_nonnegative_int(usage, path, line_no, field, f"usage.{field}")
+    validate_ledger_optional_decimal(billing, path, line_no, "actual_cost_usd", "billing.actual_cost_usd")
 
 
 def read_ledger(data_dir: Path) -> list[dict[str, Any]]:

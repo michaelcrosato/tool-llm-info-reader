@@ -564,12 +564,22 @@ def command_wrap(args: argparse.Namespace) -> int:
 
 
 def openai_bucket_times(bucket: dict[str, Any]) -> tuple[dt.datetime, dt.datetime]:
-    try:
-        start = int(bucket["start_time"])
-        end = int(bucket["end_time"])
-    except (KeyError, TypeError, ValueError) as exc:
-        raise CliError("OpenAI bucket missing numeric start_time/end_time") from exc
+    start = strict_required_int(bucket, "start_time", "OpenAI bucket")
+    end = strict_required_int(bucket, "end_time", "OpenAI bucket")
+    if end <= start:
+        raise CliError("OpenAI bucket end_time must be after start_time")
     return dt.datetime.fromtimestamp(start, tz=UTC), dt.datetime.fromtimestamp(end, tz=UTC)
+
+
+def strict_required_int(mapping: dict[str, Any], field: str, label: str) -> int:
+    if field not in mapping or mapping[field] is None:
+        raise CliError(f"{label} field {field!r} is required")
+    value = mapping[field]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CliError(f"{label} field {field!r} must be a non-negative integer")
+    if value < 0:
+        raise CliError(f"{label} field {field!r} must be >= 0")
+    return value
 
 
 def strict_optional_int(mapping: dict[str, Any], field: str) -> int | None:

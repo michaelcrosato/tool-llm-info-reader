@@ -454,6 +454,18 @@ def validate_ledger_usage(usage: dict[str, Any], path: Path, line_no: int) -> No
         )
 
 
+def validate_ledger_schema_version(record: dict[str, Any], path: Path, line_no: int) -> None:
+    schema_version = record.get("schema_version")
+    if isinstance(schema_version, bool) or not isinstance(schema_version, int):
+        raise ledger_record_error(path, line_no, "field 'schema_version' must be an integer")
+    if schema_version != SCHEMA_VERSION:
+        raise ledger_record_error(
+            path,
+            line_no,
+            f"unsupported schema_version {schema_version!r}; expected {SCHEMA_VERSION}",
+        )
+
+
 def validate_ledger_duration(
     record: dict[str, Any],
     started_at: dt.datetime,
@@ -483,6 +495,7 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     expected_hash = record_hash(record)
     if stored_hash != expected_hash:
         raise CliError(f"invalid ledger record at {path}:{line_no}: record_hash mismatch")
+    validate_ledger_schema_version(record, path, line_no)
     started_at = validate_ledger_time_field(record, path, line_no, "started_at")
     finished_at = validate_ledger_time_field(record, path, line_no, "finished_at")
     if finished_at < started_at:

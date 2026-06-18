@@ -58,7 +58,10 @@ def parse_time(value: str | None, *, default: dt.datetime | None = None) -> dt.d
     if raw.lower() == "now":
         return now_utc()
     if raw.isdigit():
-        return dt.datetime.fromtimestamp(int(raw), tz=UTC)
+        try:
+            return dt.datetime.fromtimestamp(int(raw), tz=UTC)
+        except (OverflowError, OSError, ValueError) as exc:
+            raise CliError(f"invalid time {value!r}; use ISO-8601, YYYY-MM-DD, epoch seconds, or now") from exc
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":

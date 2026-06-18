@@ -236,10 +236,22 @@ def existing_import_keys(path: Path) -> set[str]:
                 record = json.loads(stripped)
             except json.JSONDecodeError as exc:
                 raise CliError(f"invalid ledger JSON at {path}:{line_no}: {exc}") from exc
+            validate_ledger_record(record, path, line_no)
             key = import_key(record)
             if key:
                 keys.add(key)
     return keys
+
+
+def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
+    if not isinstance(record, dict):
+        raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
+    stored_hash = record.get("record_hash")
+    if not isinstance(stored_hash, str) or not stored_hash:
+        raise CliError(f"invalid ledger record at {path}:{line_no}: missing record_hash")
+    expected_hash = record_hash(record)
+    if stored_hash != expected_hash:
+        raise CliError(f"invalid ledger record at {path}:{line_no}: record_hash mismatch")
 
 
 def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
@@ -253,9 +265,11 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
             if not stripped:
                 continue
             try:
-                records.append(json.loads(stripped))
+                record = json.loads(stripped)
             except json.JSONDecodeError as exc:
                 raise CliError(f"invalid ledger JSON at {path}:{line_no}: {exc}") from exc
+            validate_ledger_record(record, path, line_no)
+            records.append(record)
     return records
 
 

@@ -705,24 +705,32 @@ def iter_openai_buckets(payload: Any) -> Iterable[dict[str, Any]]:
     raise CliError("expected an OpenAI page object with data[] or a raw bucket array")
 
 
+def openai_bucket_results(bucket: Any) -> list[Any]:
+    if not isinstance(bucket, dict):
+        raise CliError("OpenAI bucket must be an object")
+    results = bucket.get("results")
+    if not isinstance(results, list):
+        raise CliError("OpenAI bucket results must be an array")
+    return results
+
+
 def command_import_openai_usage(args: argparse.Namespace) -> int:
     path = args.file
     payload = load_json_file(path)
     records: list[dict[str, Any]] = []
     detail = source_file_detail(path)
     for bucket in iter_openai_buckets(payload):
-        if not isinstance(bucket, dict) or not isinstance(bucket.get("results"), list):
-            continue
+        results = openai_bucket_results(bucket)
         started_at, finished_at = openai_bucket_times(bucket)
-        for result in bucket["results"]:
+        for result in results:
             if not isinstance(result, dict):
-                continue
+                raise CliError("OpenAI usage result must be an object")
             object_name = str(result.get("object") or "")
             if not object_name.startswith("organization.usage."):
                 continue
             usage = normalize_openai_usage_result(result)
             if usage["tokens_consumed"] is None and usage["requests"] is None:
-                continue
+                raise CliError("OpenAI usage result must include token or request fields")
             records.append(
                 make_record(
                     kind="provider_usage_bucket",
@@ -759,12 +767,11 @@ def command_import_openai_costs(args: argparse.Namespace) -> int:
     records: list[dict[str, Any]] = []
     detail = source_file_detail(path)
     for bucket in iter_openai_buckets(payload):
-        if not isinstance(bucket, dict) or not isinstance(bucket.get("results"), list):
-            continue
+        results = openai_bucket_results(bucket)
         started_at, finished_at = openai_bucket_times(bucket)
-        for result in bucket["results"]:
+        for result in results:
             if not isinstance(result, dict):
-                continue
+                raise CliError("OpenAI cost result must be an object")
             if result.get("object") != "organization.costs.result":
                 continue
             cost, currency = strict_openai_cost_amount(result)

@@ -213,6 +213,82 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_openai_usage_import_rejects_missing_results_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_openai_usage_import_rejects_non_object_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": ["not-a-result"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_openai_usage_import_rejects_usage_result_without_metrics(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "model": "gpt-5.4",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_openai_cost_import_rejects_reversed_bucket_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
@@ -233,6 +309,29 @@ class LlmUsageReaderTests(unittest.TestCase):
                                         "line_item": "Completions",
                                     }
                                 ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = self.run_cli(data_dir, "import-openai-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_openai_cost_import_rejects_missing_results_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "costs.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
                             }
                         ],
                     }

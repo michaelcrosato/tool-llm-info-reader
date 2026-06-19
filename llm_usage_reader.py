@@ -556,6 +556,8 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
     model = record.get("model")
     if model is not None and (not isinstance(model, str) or not model.strip()):
         raise ledger_record_error(path, line_no, "field 'model' must be a non-empty string or null")
+    if isinstance(model, str) and model != model.strip():
+        raise ledger_record_error(path, line_no, "field 'model' must not have leading or trailing whitespace")
     status = validate_ledger_required_string_field(record, path, line_no, "status")
     if status not in LEDGER_STATUSES:
         raise ledger_record_error(path, line_no, f"field 'status' has unsupported value {status!r}")

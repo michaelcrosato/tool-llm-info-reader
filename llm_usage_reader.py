@@ -746,6 +746,12 @@ def validate_provider_export_payload(
             line_no,
             "usage values must be null for provider_cost_bucket",
         )
+    if kind == "provider_cost_bucket" and billing.get("source") not in PROVIDER_BILLING_SOURCES:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'billing.source' must be provider billing for provider_cost_bucket",
+        )
 
 
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:

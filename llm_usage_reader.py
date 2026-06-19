@@ -2287,20 +2287,21 @@ def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) ->
 
 def scan_inbox_once(args: argparse.Namespace) -> int:
     ensure_data_dir(args.data_dir)
-    inbox = args.inbox
+    inbox = args.inbox.resolve()
     inbox.mkdir(parents=True, exist_ok=True)
     with exclusive_file_lock(imported_state_lock_path(args.data_dir)):
         state = load_imported_state(args.data_dir)
         imported = 0
         for path in sorted(inbox.glob("*.json")):
             digest = file_sha256(path)
-            previous = state["files"].get(str(path))
+            state_key = str(path.resolve())
+            previous = state["files"].get(state_key)
             if previous and previous.get("sha256") == digest:
                 continue
             recognized, appended = import_file_by_type(args.data_dir, path, notes=args.notes)
             if recognized:
                 imported += appended
-                state["files"][str(path)] = {
+                state["files"][state_key] = {
                     "sha256": digest,
                     "imported_at": to_iso(now_utc()),
                     "records": appended,

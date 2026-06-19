@@ -4878,6 +4878,52 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(tool.scan_inbox_once(args), 0)
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
 
+    def test_watch_tracks_imported_files_by_absolute_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            usage_export = inbox / "usage.json"
+            usage_export.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 7,
+                                        "output_tokens": 3,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-5.4-mini",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                relative_args = type("Args", (), {"data_dir": data_dir, "inbox": Path("inbox"), "notes": None})()
+                absolute_args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+                self.assertEqual(tool.scan_inbox_once(relative_args), 1)
+                self.assertEqual(tool.scan_inbox_once(absolute_args), 0)
+            finally:
+                os.chdir(previous_cwd)
+
+            state = tool.load_imported_state(data_dir)
+            self.assertEqual(set(state["files"]), {str(usage_export.resolve())})
+            self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
     def test_watch_marks_recognized_duplicate_exports_as_scanned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -4914,7 +4960,7 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(tool.scan_inbox_once(args), 0)
 
             state = tool.load_imported_state(data_dir)
-            self.assertEqual(state["files"][str(duplicate)]["records"], 0)
+            self.assertEqual(state["files"][str(duplicate.resolve())]["records"], 0)
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
 
     def test_concurrent_watch_scans_preserve_imported_state_entries(self) -> None:
@@ -4948,9 +4994,9 @@ class LlmUsageReaderTests(unittest.TestCase):
 
             self.assertEqual(imported, [1, 1])
             state = tool.load_imported_state(data_dir)
-            self.assertEqual(set(state["files"]), {str(file_a), str(file_b)})
-            self.assertEqual(state["files"][str(file_a)]["records"], 1)
-            self.assertEqual(state["files"][str(file_b)]["records"], 1)
+            self.assertEqual(set(state["files"]), {str(file_a.resolve()), str(file_b.resolve())})
+            self.assertEqual(state["files"][str(file_a.resolve())]["records"], 1)
+            self.assertEqual(state["files"][str(file_b.resolve())]["records"], 1)
 
     def test_watch_rejects_malformed_imported_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5127,7 +5173,7 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(tool.scan_inbox_once(args), 0)
 
             state = tool.load_imported_state(data_dir)
-            self.assertEqual(state["files"][str(empty_export)]["records"], 0)
+            self.assertEqual(state["files"][str(empty_export.resolve())]["records"], 0)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
     def test_watch_rejects_empty_openai_export_with_malformed_bucket_time(self) -> None:

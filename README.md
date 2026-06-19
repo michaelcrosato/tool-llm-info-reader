@@ -11,6 +11,7 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 - Imported OpenAI organization cost buckets.
 - Direct OpenAI Admin API usage/cost fetches for a requested period when `OPENAI_ADMIN_KEY` is available.
 - Idempotent OpenAI imports that skip previously imported bucket rows.
+- Conflict detection for corrected OpenAI bucket rows so repeated imports do not double-count changed token or cost values.
 - Fail-closed OpenAI imports for malformed or unsupported usage/cost export fields.
 - Manual token/cost entries, clearly marked as `manual_attestation`.
 - Period summaries by provider and model.

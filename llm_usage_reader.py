@@ -62,6 +62,7 @@ ADAPTER_EVIDENCE_STRING_FIELDS = ("adapter", "adapter_version")
 ADAPTER_EVIDENCE_SHA256_FIELDS = ("evidence_sha256",)
 PROVIDER_EXPORT_STRING_FIELDS = ("file", "provider_object")
 PROVIDER_EXPORT_SHA256_FIELDS = ("file_sha256", "import_key")
+PROVIDER_EXPORT_OPTIONAL_SHA256_FIELDS = ("result_identity",)
 TOKEN_COMPONENT_FIELDS = (
     "input_tokens",
     "output_tokens",
@@ -89,6 +90,16 @@ HOST_STRING_FIELDS = (
     "python",
     "executable",
 )
+OPENAI_USAGE_METRIC_FIELDS = {
+    "input_tokens",
+    "output_tokens",
+    "input_cached_tokens",
+    "input_audio_tokens",
+    "output_audio_tokens",
+    "num_model_requests",
+    "num_requests",
+}
+OPENAI_COST_METRIC_FIELDS = {"amount", "quantity"}
 
 
 class CliError(Exception):
@@ -361,14 +372,25 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
     path = ledger_path(data_dir)
     pending = list(records)
     with exclusive_file_lock(ledger_lock_path(data_dir)):
-        seen_import_keys, seen_run_ids, seen_record_ids = existing_ledger_identities(path)
+        seen_import_keys, seen_run_ids, seen_record_ids, seen_result_identities = existing_ledger_identities(path)
         pending_record_ids: set[str] = set()
         pending_run_ids: set[str] = set()
+        pending_result_identities: dict[str, str] = {}
         for index, record in enumerate(pending, 1):
             validate_ledger_record(record, path, index)
             key = import_key(record)
             if key and key in seen_import_keys:
                 continue
+            result_identity = provider_result_identity(record)
+            if result_identity is not None:
+                identity_key = key or ""
+                seen_key = seen_result_identities.get(result_identity)
+                if seen_key is not None and seen_key != identity_key:
+                    raise CliError(f"conflicting provider result_identity in ledger: {result_identity}")
+                pending_key = pending_result_identities.get(result_identity)
+                if pending_key is not None and pending_key != identity_key:
+                    raise CliError(f"conflicting provider result_identity in pending records: {result_identity}")
+                pending_result_identities[result_identity] = identity_key
             record_id = record["record_id"]
             if record_id in seen_record_ids or record_id in pending_record_ids:
                 raise CliError(f"duplicate record_id in ledger: {record_id}")
@@ -388,6 +410,9 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
                 seen_record_ids.add(record["record_id"])
                 if key:
                     seen_import_keys.add(key)
+                result_identity = provider_result_identity(record)
+                if result_identity is not None:
+                    seen_result_identities[result_identity] = key or ""
                 run_id = ledger_run_id(record)
                 if run_id is not None:
                     seen_run_ids.add(run_id)
@@ -410,17 +435,26 @@ def import_key(record: dict[str, Any]) -> str | None:
     return str(value) if value else None
 
 
+def provider_result_identity(record: dict[str, Any]) -> str | None:
+    source = record.get("source")
+    if not isinstance(source, dict):
+        return None
+    value = source.get("result_identity")
+    return str(value) if value else None
+
+
 def existing_import_keys(path: Path) -> set[str]:
-    keys, _, _ = existing_ledger_identities(path)
+    keys, _, _, _ = existing_ledger_identities(path)
     return keys
 
 
-def existing_ledger_identities(path: Path) -> tuple[set[str], set[str], set[str]]:
+def existing_ledger_identities(path: Path) -> tuple[set[str], set[str], set[str], dict[str, str]]:
     if not path.exists():
-        return set(), set(), set()
+        return set(), set(), set(), {}
     keys: set[str] = set()
     run_ids: set[str] = set()
     record_ids: set[str] = set()
+    result_identities: dict[str, str] = {}
     with path.open("r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):
             stripped = line.strip()
@@ -440,12 +474,25 @@ def existing_ledger_identities(path: Path) -> tuple[set[str], set[str], set[str]
                 if key in keys:
                     raise CliError(f"duplicate import_key in ledger at {path}:{line_no}: {key}")
                 keys.add(key)
+            result_identity = provider_result_identity(record)
+            if result_identity is not None:
+                identity_key = key or ""
+                previous_key = result_identities.get(result_identity)
+                if previous_key is not None:
+                    if previous_key == identity_key:
+                        raise CliError(
+                            f"duplicate provider result_identity in ledger at {path}:{line_no}: {result_identity}"
+                        )
+                    raise CliError(
+                        f"conflicting provider result_identity in ledger at {path}:{line_no}: {result_identity}"
+                    )
+                result_identities[result_identity] = identity_key
             run_id = ledger_run_id(record)
             if run_id is not None:
                 if run_id in run_ids:
                     raise CliError(f"duplicate run_id in ledger at {path}:{line_no}: {run_id}")
                 run_ids.add(run_id)
-    return keys, run_ids, record_ids
+    return keys, run_ids, record_ids, result_identities
 
 
 def find_ledger_run_record(data_dir: Path, run_id: str) -> dict[str, Any] | None:
@@ -572,6 +619,16 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
                     path,
                     line_no,
                     f"field 'source.{field}' must be a sha256 hex string for provider_export",
+                )
+        for field in PROVIDER_EXPORT_OPTIONAL_SHA256_FIELDS:
+            value = source.get(field)
+            if value is None:
+                continue
+            if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
+                raise ledger_record_error(
+                    path,
+                    line_no,
+                    f"field 'source.{field}' must be a sha256 hex string when present",
                 )
         validate_provider_export_file_evidence(source, path, line_no)
     if source_type in ADAPTER_EVIDENCE_SOURCE_TYPES:
@@ -914,6 +971,7 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
     seen_record_ids: set[str] = set()
     seen_import_keys: set[str] = set()
     seen_run_ids: set[str] = set()
+    seen_result_identities: dict[str, str] = {}
     with path.open("r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):
             stripped = line.strip()
@@ -933,6 +991,19 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
                 if key in seen_import_keys:
                     raise CliError(f"duplicate import_key in ledger at {path}:{line_no}: {key}")
                 seen_import_keys.add(key)
+            result_identity = provider_result_identity(record)
+            if result_identity is not None:
+                identity_key = key or ""
+                previous_key = seen_result_identities.get(result_identity)
+                if previous_key is not None:
+                    if previous_key == identity_key:
+                        raise CliError(
+                            f"duplicate provider result_identity in ledger at {path}:{line_no}: {result_identity}"
+                        )
+                    raise CliError(
+                        f"conflicting provider result_identity in ledger at {path}:{line_no}: {result_identity}"
+                    )
+                seen_result_identities[result_identity] = identity_key
             run_id = ledger_run_id(record)
             if run_id is not None:
                 if run_id in seen_run_ids:
@@ -1538,6 +1609,26 @@ def provider_import_key(
     )
 
 
+def provider_result_identity_key(
+    provider: str,
+    kind: str,
+    started_at: dt.datetime,
+    finished_at: dt.datetime,
+    result: dict[str, Any],
+    metric_fields: set[str],
+) -> str:
+    dimensions = {key: value for key, value in result.items() if key not in metric_fields}
+    return stable_json_hash(
+        {
+            "provider": provider,
+            "kind": kind,
+            "started_at": to_iso(started_at),
+            "finished_at": to_iso(finished_at),
+            "dimensions": dimensions,
+        }
+    )
+
+
 def validate_openai_page_complete(payload: dict[str, Any]) -> list[Any]:
     data = payload.get("data")
     if not isinstance(data, list):
@@ -1632,6 +1723,14 @@ def build_openai_usage_records(path: Path, default_model: str | None, notes: str
                             finished_at,
                             result,
                         ),
+                        "result_identity": provider_result_identity_key(
+                            "openai",
+                            "provider_usage_bucket",
+                            started_at,
+                            finished_at,
+                            result,
+                            OPENAI_USAGE_METRIC_FIELDS,
+                        ),
                     },
                     status="completed",
                     notes=notes,
@@ -1692,6 +1791,14 @@ def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, A
                             started_at,
                             finished_at,
                             result,
+                        ),
+                        "result_identity": provider_result_identity_key(
+                            "openai",
+                            "provider_cost_bucket",
+                            started_at,
+                            finished_at,
+                            result,
+                            OPENAI_COST_METRIC_FIELDS,
                         ),
                     },
                     status="completed",

@@ -1994,6 +1994,7 @@ def empty_summary_row(provider: str, model: str) -> dict[str, Any]:
         "model": model,
         "records": 0,
         "requests": 0,
+        "requests_known_records": 0,
         "input_tokens": 0,
         "output_tokens": 0,
         "cached_input_tokens": 0,
@@ -2038,7 +2039,9 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
         usage = record.get("usage") or {}
         billing = record.get("billing") or {}
         row["records"] += 1
-        row["requests"] += int(usage.get("requests") or 0)
+        if usage.get("requests") is not None:
+            row["requests"] += int(usage.get("requests") or 0)
+            row["requests_known_records"] += 1
         row["input_tokens"] += int(usage.get("input_tokens") or 0)
         row["output_tokens"] += int(usage.get("output_tokens") or 0)
         row["cached_input_tokens"] += int(usage.get("cached_input_tokens") or 0)
@@ -2066,6 +2069,7 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
         for field in [
             "records",
             "requests",
+            "requests_known_records",
             "input_tokens",
             "output_tokens",
             "cached_input_tokens",
@@ -2095,6 +2099,7 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
 
 
 def render_row(row: dict[str, Any]) -> dict[str, Any]:
+    requests = row["requests"] if row["requests_known_records"] else None
     tokens_consumed = row["tokens_consumed"] if row["tokens_consumed_known_records"] else None
     billed_tokens = row["billed_tokens"] if row["billed_tokens_known_records"] else None
     actual_cost_usd = format(row["actual_cost_usd"], "f") if row["actual_cost_known_records"] else None
@@ -2105,11 +2110,13 @@ def render_row(row: dict[str, Any]) -> dict[str, Any]:
             if key
             not in {
                 "actual_cost_usd",
+                "requests",
                 "sources",
                 "tokens_consumed",
                 "billed_tokens",
             }
         },
+        "requests": requests,
         "tokens_consumed": tokens_consumed,
         "billed_tokens": billed_tokens,
         "actual_cost_usd": actual_cost_usd,
@@ -2140,6 +2147,7 @@ def print_summary_table(summary: dict[str, Any]) -> None:
         table.append(
             {
                 **row,
+                "requests": "-" if row["requests"] is None else row["requests"],
                 "tokens_consumed": "-" if row["tokens_consumed"] is None else row["tokens_consumed"],
                 "billed_tokens": "-" if row["billed_tokens"] is None else row["billed_tokens"],
                 "actual_cost_usd": "-" if row["actual_cost_usd"] is None else row["actual_cost_usd"],
@@ -2160,7 +2168,7 @@ def print_summary_table(summary: dict[str, Any]) -> None:
     print(
         "Totals: "
         f"records={totals['records']} "
-        f"requests={totals['requests']} "
+        f"requests={totals['requests'] if totals['requests'] is not None else 'unavailable'} "
         f"tokens_consumed={totals['tokens_consumed'] if totals['tokens_consumed'] is not None else 'unavailable'} "
         f"billed_tokens={totals['billed_tokens'] if totals['billed_tokens'] is not None else 'unavailable'} "
         f"actual_cost_usd={totals['actual_cost_usd'] if totals['actual_cost_usd'] is not None else 'unavailable'}"

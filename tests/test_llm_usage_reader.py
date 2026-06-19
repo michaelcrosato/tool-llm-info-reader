@@ -7663,6 +7663,102 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[0]["provider"], "anthropic")
             self.assertEqual(records[0]["kind"], "provider_usage_bucket")
 
+    def test_fetch_anthropic_imports_admin_usage_and_costs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            calls = []
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                calls.append((base_url, endpoint, dict(params), api_key))
+                self.assertEqual(base_url, "https://api.anthropic.com/v1")
+                self.assertEqual(api_key, "sk-ant-admin-test")
+                self.assertEqual(params["starting_at"], "2026-06-18T00:00:00Z")
+                self.assertEqual(params["ending_at"], "2026-06-19T00:00:00Z")
+                if endpoint == "/organizations/usage_report/messages":
+                    self.assertEqual(params["group_by"], ["model"])
+                    return {
+                        "data": [
+                            {
+                                "starting_at": "2026-06-18T00:00:00Z",
+                                "ending_at": "2026-06-19T00:00:00Z",
+                                "results": [
+                                    {
+                                        "uncached_input_tokens": 100,
+                                        "cache_read_input_tokens": 20,
+                                        "output_tokens": 30,
+                                        "model": "claude-opus-4-6",
+                                    }
+                                ],
+                            }
+                        ],
+                        "has_more": False,
+                        "next_page": None,
+                    }
+                if endpoint == "/organizations/cost_report":
+                    self.assertEqual(params["bucket_width"], "1d")
+                    self.assertEqual(params["group_by"], ["description"])
+                    return {
+                        "data": [
+                            {
+                                "starting_at": "2026-06-18T00:00:00Z",
+                                "ending_at": "2026-06-19T00:00:00Z",
+                                "results": [
+                                    {
+                                        "amount": "150",
+                                        "currency": "USD",
+                                        "description": "Claude Opus 4 Usage - Input Tokens",
+                                        "model": "claude-opus-4-6",
+                                    }
+                                ],
+                            }
+                        ],
+                        "has_more": False,
+                        "next_page": None,
+                    }
+                raise AssertionError(f"unexpected endpoint {endpoint}")
+
+            with mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_KEY": "sk-ant-admin-test"}), mock.patch.object(
+                tool, "anthropic_admin_get_json", side_effect=fake_get_json
+            ):
+                code = self.run_cli(data_dir, "fetch-anthropic", "--from", "2026-06-18", "--to", "2026-06-19")
+
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                [call[1] for call in calls],
+                ["/organizations/usage_report/messages", "/organizations/cost_report"],
+            )
+            records = tool.read_ledger(data_dir)
+            self.assertEqual([r["kind"] for r in records], ["provider_usage_bucket", "provider_cost_bucket"])
+            self.assertTrue(all(r["provider"] == "anthropic" for r in records))
+            self.assertEqual(records[0]["usage"]["input_tokens"], 120)
+            self.assertEqual(records[0]["usage"]["tokens_consumed"], 150)
+            self.assertEqual(records[1]["billing"]["actual_cost_usd"], "1.5")
+            self.assertEqual(len(list((data_dir / "anthropic-exports").glob("anthropic-*.json"))), 2)
+
+    def test_fetch_anthropic_requires_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            with mock.patch.dict(os.environ, {}, clear=True):
+                code = self.run_cli(data_dir, "fetch-anthropic", "--from", "2026-06-18", "--to", "2026-06-19")
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_fetch_anthropic_rejects_incomplete_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                return {"data": [], "has_more": True, "next_page": None}
+
+            with mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_KEY": "sk-ant-admin-test"}), mock.patch.object(
+                tool, "anthropic_admin_get_json", side_effect=fake_get_json
+            ):
+                code = self.run_cli(
+                    data_dir, "fetch-anthropic", "--kind", "costs", "--from", "2026-06-18", "--to", "2026-06-19"
+                )
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
     def test_version_flag_reports_version(self) -> None:
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as ctx:

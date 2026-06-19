@@ -116,6 +116,15 @@ python .\llm_usage_reader.py fetch-openai --from 2026-06-18 --to 2026-06-19
 
 `fetch-openai` saves the raw OpenAI responses under `data/openai-exports` and then imports those saved files through the same validation path as manual exports. Usage is grouped by model by default so period summaries include model names when OpenAI returns them.
 
+Fetch Anthropic organization usage and costs directly when an Admin API key is present:
+
+```powershell
+$env:ANTHROPIC_ADMIN_KEY = "sk-ant-admin-..."
+python .\llm_usage_reader.py fetch-anthropic --from 2026-06-18 --to 2026-06-19
+```
+
+`fetch-anthropic` calls the Anthropic Admin Usage and Cost Report endpoints (authenticating with the `x-api-key` header), saves the raw responses under `data/anthropic-exports`, and imports them through the same validation path. The cost report is always daily; `--bucket-width` applies to the usage report only.
+
 Summarize a period:
 
 ```powershell

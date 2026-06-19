@@ -32,6 +32,8 @@ from typing import Any, Iterable, Iterator
 __version__ = "0.1.0"
 SCHEMA_VERSION = 1
 OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+ANTHROPIC_API_BASE_URL = "https://api.anthropic.com/v1"
+ANTHROPIC_API_VERSION = "2023-06-01"
 OPENAI_USAGE_COMPLETIONS_OBJECT = "organization.usage.completions.result"
 OPENAI_COSTS_OBJECT = "organization.costs.result"
 ANTHROPIC_COST_OBJECT = "anthropic.organization.cost_report.result"
@@ -1893,6 +1895,85 @@ def openai_fetch_params(
     return params
 
 
+def anthropic_admin_url(base_url: str, endpoint: str, params: dict[str, Any]) -> str:
+    query = urllib.parse.urlencode(params, doseq=True)
+    return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}?{query}"
+
+
+def anthropic_admin_get_json(base_url: str, endpoint: str, params: dict[str, Any], api_key: str) -> Any:
+    request = urllib.request.Request(
+        anthropic_admin_url(base_url, endpoint, params),
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_API_VERSION,
+            "Content-Type": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:500]
+        raise CliError(f"Anthropic Admin API request failed with HTTP {exc.code}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise CliError(f"Anthropic Admin API request failed: {exc.reason}") from exc
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CliError("Anthropic Admin API returned invalid JSON") from exc
+
+
+def fetch_anthropic_admin_pages(
+    base_url: str,
+    endpoint: str,
+    params: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    page_params = dict(params)
+    buckets: list[Any] = []
+    seen_pages: set[str] = set()
+    while True:
+        payload = anthropic_admin_get_json(base_url, endpoint, page_params, api_key)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise CliError(f"Anthropic Admin API endpoint {endpoint} returned an unexpected response")
+        buckets.extend(payload["data"])
+        has_more = payload.get("has_more")
+        if not isinstance(has_more, bool):
+            raise CliError(f"Anthropic Admin API endpoint {endpoint} returned a page with non-boolean has_more")
+        if not has_more:
+            if payload.get("next_page") is not None:
+                raise CliError(f"Anthropic Admin API endpoint {endpoint} returned next_page when has_more is false")
+            return {"data": buckets, "has_more": False, "next_page": None}
+        next_page = payload.get("next_page")
+        if not isinstance(next_page, str) or not next_page:
+            raise CliError(f"Anthropic Admin API endpoint {endpoint} set has_more without next_page")
+        if next_page in seen_pages:
+            raise CliError(f"Anthropic Admin API endpoint {endpoint} repeated next_page {next_page!r}")
+        seen_pages.add(next_page)
+        page_params["page"] = next_page
+
+
+def anthropic_fetch_params(
+    start: dt.datetime,
+    end: dt.datetime,
+    bucket_width: str,
+    group_by: list[str] | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "starting_at": to_iso(start),
+        "ending_at": to_iso(end),
+        "bucket_width": bucket_width,
+    }
+    if group_by:
+        params["group_by"] = group_by
+    return params
+
+
+def anthropic_export_path(save_dir: Path, kind: str, start: dt.datetime, end: dt.datetime) -> Path:
+    return save_dir / f"anthropic-{kind}-{openai_export_slug(start)}-{openai_export_slug(end)}.json"
+
+
 def provider_import_key(
     provider: str,
     kind: str,
@@ -2529,6 +2610,76 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
     if "costs" in payloads:
         costs_path = write_new_json(openai_export_path(save_dir, "costs", start, end), payloads["costs"])
         records.extend(build_openai_cost_records(costs_path, args.notes))
+        exports["costs_export"] = str(costs_path)
+
+    count = append_ledger(args.data_dir, records)
+    print(
+        json.dumps(
+            {
+                "appended": count,
+                "fetched_records": len(records),
+                "ledger": str(ledger_path(args.data_dir)),
+                **exports,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_fetch_anthropic(args: argparse.Namespace) -> int:
+    start = parse_time(args.from_time)
+    end = parse_time(args.to)
+    if end <= start:
+        raise CliError("--to must be after --from")
+    bucket_width = args.bucket_width.strip()
+    if not bucket_width:
+        raise CliError("--bucket-width must be a non-empty string")
+    api_key_env = args.api_key_env.strip()
+    if not api_key_env:
+        raise CliError("--api-key-env must be a non-empty environment variable name")
+    default_model = normalize_cli_model(args.default_model)
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        raise CliError(f"environment variable {api_key_env} is not set")
+
+    save_dir = args.save_dir or (args.data_dir / "anthropic-exports")
+    payloads: dict[str, Any] = {}
+    records: list[dict[str, Any]] = []
+    exports: dict[str, str] = {}
+
+    if args.kind in {"usage", "both"}:
+        group_by = ["model"] if args.group_by_model else None
+        payloads["usage"] = fetch_anthropic_admin_pages(
+            args.base_url,
+            "/organizations/usage_report/messages",
+            anthropic_fetch_params(start, end, bucket_width, group_by),
+            api_key,
+        )
+
+    if args.kind in {"costs", "both"}:
+        # The Anthropic Cost Report only supports a daily bucket width.
+        payloads["costs"] = fetch_anthropic_admin_pages(
+            args.base_url,
+            "/organizations/cost_report",
+            anthropic_fetch_params(start, end, "1d", ["description"]),
+            api_key,
+        )
+
+    if "usage" in payloads:
+        collect_anthropic_usage_rows(payloads["usage"])
+    if "costs" in payloads:
+        collect_anthropic_cost_rows(payloads["costs"])
+
+    if "usage" in payloads:
+        usage_path = write_new_json(anthropic_export_path(save_dir, "usage", start, end), payloads["usage"])
+        records.extend(build_anthropic_usage_records(usage_path, default_model, args.notes))
+        exports["usage_export"] = str(usage_path)
+
+    if "costs" in payloads:
+        costs_path = write_new_json(anthropic_export_path(save_dir, "costs", start, end), payloads["costs"])
+        records.extend(build_anthropic_cost_records(costs_path, args.notes))
         exports["costs_export"] = str(costs_path)
 
     count = append_ledger(args.data_dir, records)
@@ -3188,6 +3339,34 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_openai.add_argument("--save-dir", type=Path, help="Directory for saved raw OpenAI JSON responses")
     fetch_openai.add_argument("--notes", help="Free-form note applied to imported records")
     fetch_openai.set_defaults(func=command_fetch_openai, group_by_model=True)
+
+    fetch_anthropic = sub.add_parser(
+        "fetch-anthropic", help="Fetch Anthropic Admin usage/costs for a period and import them"
+    )
+    fetch_anthropic.add_argument(
+        "--from", dest="from_time", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD"
+    )
+    fetch_anthropic.add_argument("--to", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD")
+    fetch_anthropic.add_argument("--kind", choices=["usage", "costs", "both"], default="both")
+    fetch_anthropic.add_argument(
+        "--bucket-width", default="1d", help="Usage bucket width, e.g. 1d, 1h, 1m (the cost report is always 1d)"
+    )
+    fetch_anthropic.add_argument("--default-model", help="Model name to use when usage is not grouped by model")
+    fetch_anthropic.add_argument(
+        "--no-group-by-model",
+        dest="group_by_model",
+        action="store_false",
+        help="Fetch usage without group_by=model",
+    )
+    fetch_anthropic.add_argument(
+        "--api-key-env",
+        default="ANTHROPIC_ADMIN_KEY",
+        help="Environment variable containing an Anthropic Admin API key",
+    )
+    fetch_anthropic.add_argument("--base-url", default=ANTHROPIC_API_BASE_URL, help=argparse.SUPPRESS)
+    fetch_anthropic.add_argument("--save-dir", type=Path, help="Directory for saved raw Anthropic JSON responses")
+    fetch_anthropic.add_argument("--notes", help="Free-form note applied to imported records")
+    fetch_anthropic.set_defaults(func=command_fetch_anthropic, group_by_model=True)
 
     summary = sub.add_parser("summary", help="Summarize records over a time period")
     summary.add_argument("--from", dest="from_time", help="UTC ISO time, epoch seconds, YYYY-MM-DD, or now")

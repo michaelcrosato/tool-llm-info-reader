@@ -1602,6 +1602,32 @@ def strict_openai_cost_amount(result: dict[str, Any]) -> tuple[str | None, str |
     return format(parsed, "f"), currency
 
 
+def strict_openai_cost_optional_decimal(result: dict[str, Any], field: str) -> Any:
+    if field not in result or result[field] is None:
+        return None
+    value = result[field]
+    if isinstance(value, bool):
+        raise CliError(f"OpenAI cost field {field!r} must be a non-negative decimal when present")
+    try:
+        parsed = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise CliError(f"OpenAI cost field {field!r} must be a non-negative decimal when present") from exc
+    if not parsed.is_finite() or parsed < 0:
+        raise CliError(f"OpenAI cost field {field!r} must be a non-negative decimal when present")
+    return value
+
+
+def strict_openai_cost_optional_string(result: dict[str, Any], field: str) -> str | None:
+    if field not in result or result[field] is None:
+        return None
+    value = result[field]
+    if not isinstance(value, str) or not value.strip():
+        raise CliError(f"OpenAI cost field {field!r} must be a non-empty string when present")
+    if value != value.strip():
+        raise CliError(f"OpenAI cost field {field!r} must not have leading or trailing whitespace")
+    return value
+
+
 def normalize_openai_usage_result(result: dict[str, Any]) -> dict[str, Any]:
     input_tokens = strict_optional_int(result, "input_tokens")
     output_tokens = strict_optional_int(result, "output_tokens")
@@ -1824,10 +1850,8 @@ def openai_result_object(result: dict[str, Any]) -> str:
     raise CliError(f"unsupported OpenAI bucket result object {value!r}")
 
 
-def build_openai_usage_records(path: Path, default_model: str | None, notes: str | None) -> list[dict[str, Any]]:
-    payload = load_json_file(path)
-    records: list[dict[str, Any]] = []
-    detail = source_file_detail(path)
+def collect_openai_usage_rows(payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     saw_cost_result = False
     for bucket in iter_openai_buckets(payload):
         results = openai_bucket_results(bucket)
@@ -1842,41 +1866,63 @@ def build_openai_usage_records(path: Path, default_model: str | None, notes: str
             usage = normalize_openai_usage_result(result)
             if usage["tokens_consumed"] is None and usage["requests"] is None:
                 raise CliError("OpenAI usage result must include token or request fields")
-            records.append(
-                make_record(
-                    kind="provider_usage_bucket",
-                    provider="openai",
-                    model=strict_openai_model(result) or default_model,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    usage=usage,
-                    billing=None,
-                    source_type="provider_export",
-                    source_detail={
-                        **detail,
-                        "provider_object": object_name,
-                        "import_key": provider_import_key(
-                            "openai",
-                            "provider_usage_bucket",
-                            started_at,
-                            finished_at,
-                            result,
-                        ),
-                        "result_identity": provider_result_identity_key(
-                            "openai",
-                            "provider_usage_bucket",
-                            started_at,
-                            finished_at,
-                            result,
-                            OPENAI_USAGE_METRIC_FIELDS,
-                        ),
-                    },
-                    status="completed",
-                    notes=notes,
-                )
+            rows.append(
+                {
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "result": result,
+                    "object_name": object_name,
+                    "usage": usage,
+                    "model": strict_openai_model(result),
+                }
             )
-    if not records and saw_cost_result:
+    if not rows and saw_cost_result:
         raise CliError("OpenAI usage import found only cost results; use import-openai-costs")
+    return rows
+
+
+def build_openai_usage_records(path: Path, default_model: str | None, notes: str | None) -> list[dict[str, Any]]:
+    payload = load_json_file(path)
+    records: list[dict[str, Any]] = []
+    detail = source_file_detail(path)
+    for row in collect_openai_usage_rows(payload):
+        started_at = row["started_at"]
+        finished_at = row["finished_at"]
+        result = row["result"]
+        object_name = row["object_name"]
+        records.append(
+            make_record(
+                kind="provider_usage_bucket",
+                provider="openai",
+                model=row["model"] or default_model,
+                started_at=started_at,
+                finished_at=finished_at,
+                usage=row["usage"],
+                billing=None,
+                source_type="provider_export",
+                source_detail={
+                    **detail,
+                    "provider_object": object_name,
+                    "import_key": provider_import_key(
+                        "openai",
+                        "provider_usage_bucket",
+                        started_at,
+                        finished_at,
+                        result,
+                    ),
+                    "result_identity": provider_result_identity_key(
+                        "openai",
+                        "provider_usage_bucket",
+                        started_at,
+                        finished_at,
+                        result,
+                        OPENAI_USAGE_METRIC_FIELDS,
+                    ),
+                },
+                status="completed",
+                notes=notes,
+            )
+        )
     return records
 
 
@@ -1888,10 +1934,8 @@ def command_import_openai_usage(args: argparse.Namespace) -> int:
     return 0
 
 
-def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, Any]]:
-    payload = load_json_file(path)
-    records: list[dict[str, Any]] = []
-    detail = source_file_detail(path)
+def collect_openai_cost_rows(payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     saw_usage_result = False
     for bucket in iter_openai_buckets(payload):
         results = openai_bucket_results(bucket)
@@ -1904,49 +1948,73 @@ def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, A
                 saw_usage_result = True
                 continue
             cost, currency = strict_openai_cost_amount(result)
-            records.append(
-                make_record(
-                    kind="provider_cost_bucket",
-                    provider="openai",
-                    model=None,
-                    started_at=started_at,
-                    finished_at=finished_at,
-                    usage=blank_usage(),
-                    billing={
-                        "actual_cost_usd": cost,
-                        "currency": currency,
-                        "source": "provider_cost_api",
-                        "line_item": result.get("line_item"),
-                        "project_id": result.get("project_id"),
-                        "api_key_id": result.get("api_key_id"),
-                        "quantity": result.get("quantity"),
-                    },
-                    source_type="provider_export",
-                    source_detail={
-                        **detail,
-                        "provider_object": "organization.costs.result",
-                        "import_key": provider_import_key(
-                            "openai",
-                            "provider_cost_bucket",
-                            started_at,
-                            finished_at,
-                            result,
-                        ),
-                        "result_identity": provider_result_identity_key(
-                            "openai",
-                            "provider_cost_bucket",
-                            started_at,
-                            finished_at,
-                            result,
-                            OPENAI_COST_METRIC_FIELDS,
-                        ),
-                    },
-                    status="completed",
-                    notes=notes,
-                )
+            rows.append(
+                {
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "result": result,
+                    "cost": cost,
+                    "currency": currency,
+                    "line_item": strict_openai_cost_optional_string(result, "line_item"),
+                    "project_id": strict_openai_cost_optional_string(result, "project_id"),
+                    "api_key_id": strict_openai_cost_optional_string(result, "api_key_id"),
+                    "quantity": strict_openai_cost_optional_decimal(result, "quantity"),
+                }
             )
-    if not records and saw_usage_result:
+    if not rows and saw_usage_result:
         raise CliError("OpenAI cost import found only usage results; use import-openai-usage")
+    return rows
+
+
+def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, Any]]:
+    payload = load_json_file(path)
+    records: list[dict[str, Any]] = []
+    detail = source_file_detail(path)
+    for row in collect_openai_cost_rows(payload):
+        started_at = row["started_at"]
+        finished_at = row["finished_at"]
+        result = row["result"]
+        records.append(
+            make_record(
+                kind="provider_cost_bucket",
+                provider="openai",
+                model=None,
+                started_at=started_at,
+                finished_at=finished_at,
+                usage=blank_usage(),
+                billing={
+                    "actual_cost_usd": row["cost"],
+                    "currency": row["currency"],
+                    "source": "provider_cost_api",
+                    "line_item": row["line_item"],
+                    "project_id": row["project_id"],
+                    "api_key_id": row["api_key_id"],
+                    "quantity": row["quantity"],
+                },
+                source_type="provider_export",
+                source_detail={
+                    **detail,
+                    "provider_object": "organization.costs.result",
+                    "import_key": provider_import_key(
+                        "openai",
+                        "provider_cost_bucket",
+                        started_at,
+                        finished_at,
+                        result,
+                    ),
+                    "result_identity": provider_result_identity_key(
+                        "openai",
+                        "provider_cost_bucket",
+                        started_at,
+                        finished_at,
+                        result,
+                        OPENAI_COST_METRIC_FIELDS,
+                    ),
+                },
+                status="completed",
+                notes=notes,
+            )
+        )
     return records
 
 
@@ -1994,6 +2062,11 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
             openai_fetch_params(start, end, bucket_width, ["line_item"]),
             api_key,
         )
+
+    if "usage" in payloads:
+        collect_openai_usage_rows(payloads["usage"])
+    if "costs" in payloads:
+        collect_openai_cost_rows(payloads["costs"])
 
     if "usage" in payloads:
         usage_path = write_new_json(openai_export_path(save_dir, "usage", start, end), payloads["usage"])

@@ -336,8 +336,8 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
         record_id = run.get("record_id")
         if not isinstance(record_id, str) or not record_id.strip():
             raise CliError(f"invalid run state at {path}: field 'record_id' is required when status is finalized")
-        if record_id != record_id.strip():
-            raise CliError(f"invalid run state at {path}: field 'record_id' must not have leading or trailing whitespace")
+        if not RECORD_ID_PATTERN.fullmatch(record_id):
+            raise CliError(f"invalid run state at {path}: field 'record_id' must be a valid record id")
     return run
 
 

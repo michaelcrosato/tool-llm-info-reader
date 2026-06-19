@@ -105,6 +105,114 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertIsNone(summary["totals"]["requests"])
             self.assertEqual(summary["totals"]["requests_known_records"], 0)
 
+    def test_summary_marks_unknown_token_components_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--requests",
+                    "1",
+                ),
+                0,
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": None,
+                    "model": None,
+                    "trusted_only": False,
+                    "data_dir": data_dir,
+                },
+            )()
+
+            summary = tool.summarize_records(
+                tool.read_ledger(data_dir),
+                tool.parse_time("2026-06-18T00:00:00Z"),
+                tool.parse_time("2026-06-19T00:00:00Z"),
+                args,
+            )
+
+            for row in (summary["rows"][0], summary["totals"]):
+                self.assertIsNone(row["input_tokens"])
+                self.assertEqual(row["input_tokens_known_records"], 0)
+                self.assertIsNone(row["output_tokens"])
+                self.assertEqual(row["output_tokens_known_records"], 0)
+                self.assertIsNone(row["cached_input_tokens"])
+                self.assertEqual(row["cached_input_tokens_known_records"], 0)
+                self.assertIsNone(row["input_audio_tokens"])
+                self.assertEqual(row["input_audio_tokens_known_records"], 0)
+                self.assertIsNone(row["output_audio_tokens"])
+                self.assertEqual(row["output_audio_tokens_known_records"], 0)
+
+    def test_summary_preserves_known_zero_token_components(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "0",
+                    "--output-tokens",
+                    "0",
+                    "--cached-input-tokens",
+                    "0",
+                    "--input-audio-tokens",
+                    "0",
+                    "--output-audio-tokens",
+                    "0",
+                ),
+                0,
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": None,
+                    "model": None,
+                    "trusted_only": False,
+                    "data_dir": data_dir,
+                },
+            )()
+
+            summary = tool.summarize_records(
+                tool.read_ledger(data_dir),
+                tool.parse_time("2026-06-18T00:00:00Z"),
+                tool.parse_time("2026-06-19T00:00:00Z"),
+                args,
+            )
+
+            for row in (summary["rows"][0], summary["totals"]):
+                self.assertEqual(row["input_tokens"], 0)
+                self.assertEqual(row["input_tokens_known_records"], 1)
+                self.assertEqual(row["output_tokens"], 0)
+                self.assertEqual(row["output_tokens_known_records"], 1)
+                self.assertEqual(row["cached_input_tokens"], 0)
+                self.assertEqual(row["cached_input_tokens_known_records"], 1)
+                self.assertEqual(row["input_audio_tokens"], 0)
+                self.assertEqual(row["input_audio_tokens_known_records"], 1)
+                self.assertEqual(row["output_audio_tokens"], 0)
+                self.assertEqual(row["output_audio_tokens_known_records"], 1)
+
     def test_summary_preserves_known_zero_requests(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

@@ -69,6 +69,13 @@ TOKEN_COMPONENT_FIELDS = (
     "input_audio_tokens",
     "output_audio_tokens",
 )
+SUMMARY_TOKEN_COMPONENT_FIELDS = (
+    "input_tokens",
+    "output_tokens",
+    "cached_input_tokens",
+    "input_audio_tokens",
+    "output_audio_tokens",
+)
 USAGE_VALUE_FIELDS = [
     "input_tokens",
     "output_tokens",
@@ -1996,10 +2003,15 @@ def empty_summary_row(provider: str, model: str) -> dict[str, Any]:
         "requests": 0,
         "requests_known_records": 0,
         "input_tokens": 0,
+        "input_tokens_known_records": 0,
         "output_tokens": 0,
+        "output_tokens_known_records": 0,
         "cached_input_tokens": 0,
+        "cached_input_tokens_known_records": 0,
         "input_audio_tokens": 0,
+        "input_audio_tokens_known_records": 0,
         "output_audio_tokens": 0,
+        "output_audio_tokens_known_records": 0,
         "tokens_consumed": 0,
         "tokens_consumed_known_records": 0,
         "billed_tokens": 0,
@@ -2042,11 +2054,10 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
         if usage.get("requests") is not None:
             row["requests"] += int(usage.get("requests") or 0)
             row["requests_known_records"] += 1
-        row["input_tokens"] += int(usage.get("input_tokens") or 0)
-        row["output_tokens"] += int(usage.get("output_tokens") or 0)
-        row["cached_input_tokens"] += int(usage.get("cached_input_tokens") or 0)
-        row["input_audio_tokens"] += int(usage.get("input_audio_tokens") or 0)
-        row["output_audio_tokens"] += int(usage.get("output_audio_tokens") or 0)
+        for field in SUMMARY_TOKEN_COMPONENT_FIELDS:
+            if usage.get(field) is not None:
+                row[field] += int(usage.get(field) or 0)
+                row[f"{field}_known_records"] += 1
         if usage.get("tokens_consumed") is not None:
             row["tokens_consumed"] += int(usage.get("tokens_consumed") or 0)
             row["tokens_consumed_known_records"] += 1
@@ -2071,10 +2082,15 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
             "requests",
             "requests_known_records",
             "input_tokens",
+            "input_tokens_known_records",
             "output_tokens",
+            "output_tokens_known_records",
             "cached_input_tokens",
+            "cached_input_tokens_known_records",
             "input_audio_tokens",
+            "input_audio_tokens_known_records",
             "output_audio_tokens",
+            "output_audio_tokens_known_records",
             "tokens_consumed",
             "tokens_consumed_known_records",
             "billed_tokens",
@@ -2100,6 +2116,9 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
 
 def render_row(row: dict[str, Any]) -> dict[str, Any]:
     requests = row["requests"] if row["requests_known_records"] else None
+    token_components = {
+        field: row[field] if row[f"{field}_known_records"] else None for field in SUMMARY_TOKEN_COMPONENT_FIELDS
+    }
     tokens_consumed = row["tokens_consumed"] if row["tokens_consumed_known_records"] else None
     billed_tokens = row["billed_tokens"] if row["billed_tokens_known_records"] else None
     actual_cost_usd = format(row["actual_cost_usd"], "f") if row["actual_cost_known_records"] else None
@@ -2112,11 +2131,13 @@ def render_row(row: dict[str, Any]) -> dict[str, Any]:
                 "actual_cost_usd",
                 "requests",
                 "sources",
+                *SUMMARY_TOKEN_COMPONENT_FIELDS,
                 "tokens_consumed",
                 "billed_tokens",
             }
         },
         "requests": requests,
+        **token_components,
         "tokens_consumed": tokens_consumed,
         "billed_tokens": billed_tokens,
         "actual_cost_usd": actual_cost_usd,

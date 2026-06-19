@@ -1314,9 +1314,6 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
     for record in records:
         if not record_overlaps(record, start, end):
             continue
-        if not record_is_contained(record, start, end):
-            partial_overlap_skipped += 1
-            continue
         provider = str(record.get("provider") or "unknown")
         model = str(record.get("model") or "(unattributed)")
         if args.provider and provider != args.provider:
@@ -1328,6 +1325,9 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
         source_type = str((record.get("source") or {}).get("type") or "unknown")
         if args.trusted_only and source_type in TRUSTED_EXCLUDED_SOURCE_TYPES:
             skipped += 1
+            continue
+        if not record_is_contained(record, start, end):
+            partial_overlap_skipped += 1
             continue
         key = (provider, model)
         row = rows.setdefault(key, empty_summary_row(provider, model))

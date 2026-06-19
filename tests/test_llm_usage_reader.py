@@ -4264,6 +4264,71 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_finish_rejects_relative_run_state_created_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            runs_dir = data_dir / "runs"
+            runs_dir.mkdir(parents=True)
+            (runs_dir / "badtime.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": tool.SCHEMA_VERSION,
+                        "run_id": "badtime",
+                        "provider": "openai",
+                        "model": "gpt-5.4",
+                        "started_at": "2026-06-18T20:00:00Z",
+                        "created_at": "now",
+                        "status": "running",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                "badtime",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_finish_rejects_offset_run_state_finished_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            runs_dir = data_dir / "runs"
+            runs_dir.mkdir(parents=True)
+            (runs_dir / "orphan.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": tool.SCHEMA_VERSION,
+                        "run_id": "orphan",
+                        "provider": "openai",
+                        "model": "gpt-5.4",
+                        "started_at": "2026-06-18T20:00:00Z",
+                        "finished_at": "2026-06-18T20:01:00+00:00",
+                        "status": "completed",
+                        "record_id": "rec_missing",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                "orphan",
+                "--finished-at",
+                "2026-06-18T20:02:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_finish_rejects_malformed_run_state_identity_metadata(self) -> None:
         cases = [
             ("badprovider", {"provider": ""}, "provider"),

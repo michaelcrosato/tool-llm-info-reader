@@ -1469,8 +1469,31 @@ def load_imported_state(data_dir: Path) -> dict[str, Any]:
     if not path.exists():
         return {"files": {}}
     state = load_json_file(path)
-    if not isinstance(state, dict) or not isinstance(state.get("files"), dict):
-        return {"files": {}}
+    if not isinstance(state, dict):
+        raise CliError(f"invalid imported state at {path}: expected object")
+    files = state.get("files")
+    if not isinstance(files, dict):
+        raise CliError(f"invalid imported state at {path}: field 'files' must be object")
+    for tracked_path, entry in files.items():
+        if not isinstance(tracked_path, str) or not tracked_path:
+            raise CliError(f"invalid imported state at {path}: file keys must be non-empty strings")
+        if not isinstance(entry, dict):
+            raise CliError(f"invalid imported state at {path}: entry for {tracked_path!r} must be object")
+        digest = entry.get("sha256")
+        if not isinstance(digest, str) or not SHA256_PATTERN.fullmatch(digest):
+            raise CliError(f"invalid imported state at {path}: entry for {tracked_path!r} has invalid sha256")
+        imported_at = entry.get("imported_at")
+        if not isinstance(imported_at, str) or not imported_at:
+            raise CliError(f"invalid imported state at {path}: entry for {tracked_path!r} has invalid imported_at")
+        try:
+            parse_time(imported_at)
+        except CliError as exc:
+            raise CliError(
+                f"invalid imported state at {path}: entry for {tracked_path!r} has invalid imported_at"
+            ) from exc
+        records = entry.get("records")
+        if isinstance(records, bool) or not isinstance(records, int) or records < 0:
+            raise CliError(f"invalid imported state at {path}: entry for {tracked_path!r} has invalid records")
     return state
 
 

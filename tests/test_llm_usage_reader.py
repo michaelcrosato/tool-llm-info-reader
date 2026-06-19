@@ -2318,6 +2318,69 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(state["files"][str(duplicate)]["records"], 0)
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
 
+    def test_watch_rejects_malformed_imported_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            data_dir.mkdir()
+            state_path = tool.imported_state_path(data_dir)
+            state_path.write_text("[]\n", encoding="utf-8")
+            (inbox / "usage.json").write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 7,
+                                        "output_tokens": 3,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-5.4-mini",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+
+            with self.assertRaisesRegex(tool.CliError, "invalid imported state"):
+                tool.scan_inbox_once(args)
+
+            self.assertEqual(state_path.read_text(encoding="utf-8"), "[]\n")
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_watch_rejects_malformed_imported_state_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            tool.imported_state_path(data_dir).write_text(
+                json.dumps(
+                    {
+                        "files": {
+                            "usage.json": {
+                                "sha256": "not-a-sha",
+                                "imported_at": "2026-06-18T20:00:00Z",
+                                "records": 1,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(tool.CliError, "invalid sha256"):
+                tool.load_imported_state(data_dir)
+
     def test_watch_rejects_malformed_openai_export_instead_of_ignoring(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

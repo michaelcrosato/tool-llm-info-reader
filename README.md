@@ -83,7 +83,7 @@ The default data directory is `data`.
 - `data/usage-ledger.jsonl`: append-only local ledger.
 - `data/usage-ledger.lock`: process lock used while appending and deduplicating imports.
 - `data/runs/*.json`: in-progress/completed run state from `start`/`finish`.
-- `data/imported-files.json`: file hashes already imported by `watch`.
+- `data/imported-files.json`: file hashes already imported by `watch`; malformed state is rejected.
 - `data/inbox`: optional directory for continuously imported provider export files.
 
 Each ledger record includes:

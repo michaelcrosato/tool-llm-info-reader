@@ -2253,11 +2253,15 @@ def load_imported_state(data_dir: Path) -> dict[str, Any]:
         if not isinstance(imported_at, str) or not imported_at:
             raise CliError(f"invalid imported state at {path}: entry for {tracked_path!r} has invalid imported_at")
         try:
-            parse_time(imported_at)
+            parsed_imported_at = parse_time(imported_at)
         except CliError as exc:
             raise CliError(
                 f"invalid imported state at {path}: entry for {tracked_path!r} has invalid imported_at"
             ) from exc
+        if imported_at != to_iso(parsed_imported_at):
+            raise CliError(
+                f"invalid imported state at {path}: entry for {tracked_path!r} has non-canonical imported_at"
+            )
         records = entry.get("records")
         if isinstance(records, bool) or not isinstance(records, int) or records < 0:
             raise CliError(f"invalid imported state at {path}: entry for {tracked_path!r} has invalid records")

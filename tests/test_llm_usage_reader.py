@@ -3785,6 +3785,72 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[1]["billing"]["quantity"], 15)
             self.assertEqual(len(list((data_dir / "openai-exports").glob("openai-*.json"))), 2)
 
+    def test_fetch_openai_rejects_repeated_next_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                self.assertEqual(endpoint, "/organization/usage/completions")
+                return {
+                    "object": "page",
+                    "data": [],
+                    "has_more": True,
+                    "next_page": "stuck-cursor",
+                }
+
+            with mock.patch.dict(os.environ, {"OPENAI_ADMIN_KEY": "sk-admin-test"}), mock.patch.object(
+                tool,
+                "openai_admin_get_json",
+                side_effect=fake_get_json,
+            ):
+                code = self.run_cli(
+                    data_dir,
+                    "fetch-openai",
+                    "--from",
+                    "2026-06-18",
+                    "--to",
+                    "2026-06-19",
+                    "--kind",
+                    "usage",
+                )
+
+            self.assertEqual(code, 2)
+            self.assertFalse((data_dir / "openai-exports").exists())
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_fetch_openai_rejects_non_boolean_has_more(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                self.assertEqual(endpoint, "/organization/usage/completions")
+                return {
+                    "object": "page",
+                    "data": [],
+                    "has_more": "false",
+                    "next_page": None,
+                }
+
+            with mock.patch.dict(os.environ, {"OPENAI_ADMIN_KEY": "sk-admin-test"}), mock.patch.object(
+                tool,
+                "openai_admin_get_json",
+                side_effect=fake_get_json,
+            ):
+                code = self.run_cli(
+                    data_dir,
+                    "fetch-openai",
+                    "--from",
+                    "2026-06-18",
+                    "--to",
+                    "2026-06-19",
+                    "--kind",
+                    "usage",
+                )
+
+            self.assertEqual(code, 2)
+            self.assertFalse((data_dir / "openai-exports").exists())
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_fetch_openai_requires_admin_key_before_side_effects(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

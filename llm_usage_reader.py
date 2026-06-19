@@ -9,7 +9,7 @@ LLM to invent telemetry.
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import datetime as dt
 import hashlib
 import json
@@ -211,6 +211,10 @@ def ledger_lock_path(data_dir: Path) -> Path:
 
 def run_lock_path(data_dir: Path, run_id: str) -> Path:
     return data_dir / "runs" / f"{run_id}.lock"
+
+
+def run_state_path(data_dir: Path, run_id: str) -> Path:
+    return data_dir / "runs" / f"{run_id}.json"
 
 
 @contextmanager
@@ -935,7 +939,7 @@ def command_start(args: argparse.Namespace) -> int:
     ensure_data_dir(data_dir)
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
     with exclusive_file_lock(run_lock_path(data_dir, run_id)):
-        run_path = data_dir / "runs" / f"{run_id}.json"
+        run_path = run_state_path(data_dir, run_id)
         if run_path.exists():
             raise CliError(f"run already exists: {run_id}")
         if find_ledger_run_record(data_dir, run_id) is not None:
@@ -962,7 +966,7 @@ def command_finish(args: argparse.Namespace) -> int:
     data_dir = args.data_dir
     run_id = validate_run_id(args.run_id)
     with exclusive_file_lock(run_lock_path(data_dir, run_id)):
-        run_path = data_dir / "runs" / f"{run_id}.json"
+        run_path = run_state_path(data_dir, run_id)
         run = load_run_state(run_path, run_id)
         existing_record = find_ledger_run_record(data_dir, run_id)
         if existing_record is not None:
@@ -1029,22 +1033,27 @@ def command_record(args: argparse.Namespace) -> int:
     if finished_at < started_at:
         raise CliError("finished time cannot be earlier than started time")
     exit_code = positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None
-    record = make_record(
-        kind="run",
-        provider=provider,
-        model=normalize_cli_model(args.model),
-        started_at=started_at,
-        finished_at=finished_at,
-        usage=make_usage(args),
-        billing=make_billing(args),
-        source_type=args.source,
-        source_detail=None,
-        status=args.status or ("completed" if exit_code in {None, 0} else "failed"),
-        run_id=validate_run_id(args.run_id) if args.run_id else None,
-        exit_code=exit_code,
-        notes=args.notes,
-    )
-    append_ledger(args.data_dir, [record])
+    run_id = validate_run_id(args.run_id) if args.run_id else None
+    lock = exclusive_file_lock(run_lock_path(args.data_dir, run_id)) if run_id is not None else nullcontext()
+    with lock:
+        if run_id is not None and run_state_path(args.data_dir, run_id).exists():
+            raise CliError(f"run already exists: {run_id}")
+        record = make_record(
+            kind="run",
+            provider=provider,
+            model=normalize_cli_model(args.model),
+            started_at=started_at,
+            finished_at=finished_at,
+            usage=make_usage(args),
+            billing=make_billing(args),
+            source_type=args.source,
+            source_detail=None,
+            status=args.status or ("completed" if exit_code in {None, 0} else "failed"),
+            run_id=run_id,
+            exit_code=exit_code,
+            notes=args.notes,
+        )
+        append_ledger(args.data_dir, [record])
     print(json.dumps({"appended": 1, "record_id": record["record_id"], "ledger": str(ledger_path(args.data_dir))}, indent=2))
     return 0
 
@@ -1064,6 +1073,8 @@ def command_wrap(args: argparse.Namespace) -> int:
     model = normalize_cli_model(args.model)
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
     with exclusive_file_lock(run_lock_path(args.data_dir, run_id)):
+        if run_state_path(args.data_dir, run_id).exists():
+            raise CliError(f"run already exists: {run_id}")
         if find_ledger_run_record(args.data_dir, run_id) is not None:
             raise CliError(f"duplicate run_id in ledger: {run_id}")
         started_at = now_utc()

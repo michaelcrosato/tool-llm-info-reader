@@ -309,6 +309,42 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["run_id"], run_id)
 
+    def test_record_rejects_existing_run_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            run_id = "run_existing_state"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                ),
+                0,
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--run-id",
+                run_id,
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_record_rejects_empty_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -3697,6 +3733,43 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertFalse(marker.exists())
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
+    def test_wrap_rejects_existing_run_state_before_running_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            marker = root / "marker.txt"
+            run_id = "run_existing_wrap_state"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                ),
+                0,
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--run-id",
+                run_id,
+                "--provider",
+                "local",
+                "--",
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertFalse(marker.exists())
+            self.assertEqual(tool.read_ledger(data_dir), [])
 
     def test_concurrent_wrap_same_run_id_runs_command_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -288,10 +288,18 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
     path = ledger_path(data_dir)
     pending = list(records)
     with exclusive_file_lock(ledger_lock_path(data_dir)):
-        seen_import_keys, seen_run_ids = existing_ledger_identities(path)
+        seen_import_keys, seen_run_ids, seen_record_ids = existing_ledger_identities(path)
+        pending_record_ids: set[str] = set()
         pending_run_ids: set[str] = set()
         for index, record in enumerate(pending, 1):
             validate_ledger_record(record, path, index)
+            key = import_key(record)
+            if key and key in seen_import_keys:
+                continue
+            record_id = record["record_id"]
+            if record_id in seen_record_ids or record_id in pending_record_ids:
+                raise CliError(f"duplicate record_id in ledger: {record_id}")
+            pending_record_ids.add(record_id)
             run_id = ledger_run_id(record)
             if run_id is not None:
                 if run_id in seen_run_ids or run_id in pending_run_ids:
@@ -304,6 +312,7 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
                 if key and key in seen_import_keys:
                     continue
                 fh.write(json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n")
+                seen_record_ids.add(record["record_id"])
                 if key:
                     seen_import_keys.add(key)
                 run_id = ledger_run_id(record)
@@ -329,15 +338,16 @@ def import_key(record: dict[str, Any]) -> str | None:
 
 
 def existing_import_keys(path: Path) -> set[str]:
-    keys, _ = existing_ledger_identities(path)
+    keys, _, _ = existing_ledger_identities(path)
     return keys
 
 
-def existing_ledger_identities(path: Path) -> tuple[set[str], set[str]]:
+def existing_ledger_identities(path: Path) -> tuple[set[str], set[str], set[str]]:
     if not path.exists():
-        return set(), set()
+        return set(), set(), set()
     keys: set[str] = set()
     run_ids: set[str] = set()
+    record_ids: set[str] = set()
     with path.open("r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):
             stripped = line.strip()
@@ -348,6 +358,10 @@ def existing_ledger_identities(path: Path) -> tuple[set[str], set[str]]:
             except json.JSONDecodeError as exc:
                 raise CliError(f"invalid ledger JSON at {path}:{line_no}: {exc}") from exc
             validate_ledger_record(record, path, line_no)
+            record_id = record["record_id"]
+            if record_id in record_ids:
+                raise CliError(f"duplicate record_id in ledger at {path}:{line_no}: {record_id}")
+            record_ids.add(record_id)
             key = import_key(record)
             if key:
                 if key in keys:
@@ -358,7 +372,7 @@ def existing_ledger_identities(path: Path) -> tuple[set[str], set[str]]:
                 if run_id in run_ids:
                     raise CliError(f"duplicate run_id in ledger at {path}:{line_no}: {run_id}")
                 run_ids.add(run_id)
-    return keys, run_ids
+    return keys, run_ids, record_ids
 
 
 def find_ledger_run_record(data_dir: Path, run_id: str) -> dict[str, Any] | None:
@@ -598,6 +612,7 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     records: list[dict[str, Any]] = []
+    seen_record_ids: set[str] = set()
     seen_import_keys: set[str] = set()
     seen_run_ids: set[str] = set()
     with path.open("r", encoding="utf-8") as fh:
@@ -610,6 +625,10 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise CliError(f"invalid ledger JSON at {path}:{line_no}: {exc}") from exc
             validate_ledger_record(record, path, line_no)
+            record_id = record["record_id"]
+            if record_id in seen_record_ids:
+                raise CliError(f"duplicate record_id in ledger at {path}:{line_no}: {record_id}")
+            seen_record_ids.add(record_id)
             key = import_key(record)
             if key:
                 if key in seen_import_keys:

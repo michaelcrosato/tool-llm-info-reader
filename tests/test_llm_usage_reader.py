@@ -581,6 +581,35 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "duplicate import_key"):
                 tool.read_ledger(data_dir)
 
+    def test_read_ledger_rejects_duplicate_record_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            duplicate = dict(record)
+            duplicate["started_at"] = "2026-06-18T20:02:00Z"
+            duplicate["finished_at"] = "2026-06-18T20:03:00Z"
+            tool.refresh_record_hash(duplicate)
+            ledger.write_text(json.dumps(record) + "\n" + json.dumps(duplicate) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "duplicate record_id"):
+                tool.read_ledger(data_dir)
+
     def test_read_ledger_rejects_hash_valid_malformed_usage_object(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

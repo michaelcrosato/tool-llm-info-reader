@@ -1969,6 +1969,68 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(tool.load_imported_state(data_dir), {"files": {}})
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_watch_marks_empty_openai_export_as_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            empty_export = inbox / "empty-openai.json"
+            empty_export.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+
+            self.assertEqual(tool.scan_inbox_once(args), 0)
+            self.assertEqual(tool.scan_inbox_once(args), 0)
+
+            state = tool.load_imported_state(data_dir)
+            self.assertEqual(state["files"][str(empty_export)]["records"], 0)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_watch_rejects_empty_openai_export_with_malformed_bucket_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "bad-empty-openai.json").write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": "1781740800",
+                                "end_time": 1781827200,
+                                "results": [],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+
+            with self.assertRaisesRegex(tool.CliError, "start_time"):
+                tool.scan_inbox_once(args)
+
+            self.assertEqual(tool.load_imported_state(data_dir), {"files": {}})
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_watch_rejects_invalid_intervals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

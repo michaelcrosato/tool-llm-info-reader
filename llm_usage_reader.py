@@ -1415,11 +1415,19 @@ def classify_provider_export(payload: Any) -> str | None:
         buckets = list(iter_openai_buckets(payload))
     except CliError:
         return None
+    saw_openai_shape = (
+        isinstance(payload, dict)
+        and payload.get("object") == "page"
+        and isinstance(payload.get("data"), list)
+        and not buckets
+    )
     saw_usage = False
     saw_cost = False
     for bucket in buckets:
         if not is_openai_bucket_like(bucket):
             continue
+        saw_openai_shape = True
+        openai_bucket_times(bucket)
         for result in openai_bucket_results(bucket):
             if not isinstance(result, dict):
                 raise CliError("OpenAI bucket result must be an object")
@@ -1432,6 +1440,8 @@ def classify_provider_export(payload: Any) -> str | None:
         return "openai_costs"
     if saw_usage and saw_cost:
         return "mixed"
+    if saw_openai_shape:
+        return "openai_empty"
     return None
 
 
@@ -1440,6 +1450,8 @@ def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) ->
     kind = classify_provider_export(payload)
     if kind is None:
         return False, 0
+    if kind == "openai_empty":
+        return True, 0
     fake_args = argparse.Namespace(data_dir=data_dir, file=path, default_model=None, notes=notes)
     before = len(read_ledger(data_dir))
     if kind in {"openai_usage", "mixed"}:

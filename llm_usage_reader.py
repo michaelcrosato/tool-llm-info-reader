@@ -497,7 +497,20 @@ def validate_ledger_billing(billing: dict[str, Any], source_type: str, path: Pat
     if source in PROVIDER_BILLING_SOURCES and source_type != "provider_export":
         raise ledger_record_error(path, line_no, f"field 'billing.source' cannot be {source!r} unless source.type is provider_export")
     validate_ledger_optional_decimal(billing, path, line_no, "actual_cost_usd", "billing.actual_cost_usd")
-    if billing.get("actual_cost_usd") is not None:
+    if billing.get("actual_cost_usd") is None:
+        if source != "unavailable":
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'billing.source' must be unavailable when actual_cost_usd is null",
+            )
+        if billing.get("currency") is not None:
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'billing.currency' must be null when actual_cost_usd is null",
+            )
+    else:
         if source == "unavailable":
             raise ledger_record_error(path, line_no, "field 'billing.source' cannot be unavailable when actual_cost_usd is set")
         if billing.get("currency") != "usd":
@@ -698,6 +711,8 @@ def make_billing(args: argparse.Namespace) -> dict[str, Any]:
     billing_source = getattr(args, "billing_source", None)
     if billing_source is not None and billing_source not in MANUAL_BILLING_SOURCES:
         raise CliError(f"--billing-source must be one of: {', '.join(sorted(MANUAL_BILLING_SOURCES))}")
+    if cost is None and billing_source not in {None, "unavailable"}:
+        raise CliError("--billing-source requires --cost-usd unless it is unavailable")
     if cost is not None and billing_source == "unavailable":
         raise CliError("--billing-source cannot be unavailable when --cost-usd is set")
     return {

@@ -239,6 +239,26 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_rejects_billing_source_without_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--billing-source",
+                "manual_attestation",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_record_rejects_pricing_estimate_as_actual_cost_source(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -1075,6 +1095,56 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(tool.CliError, "source.type is provider_export"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_billing_source_without_actual_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["billing"]["source"] = "manual_attestation"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "actual_cost_usd is null"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_currency_without_actual_cost(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["billing"]["currency"] = "usd"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "billing.currency"):
                 tool.read_ledger(data_dir)
 
     def test_read_ledger_rejects_hash_valid_unavailable_source_with_usage_values(self) -> None:

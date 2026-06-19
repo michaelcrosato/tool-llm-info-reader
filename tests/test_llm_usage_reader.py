@@ -2537,6 +2537,47 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[0]["status"], "completed")
             self.assertEqual(records[0]["record_hash"], tool.record_hash(records[0]))
 
+    def test_wrap_rejects_duplicate_run_id_before_running_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            marker = root / "marker.txt"
+            run_id = "run_duplicate_wrap"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                ),
+                0,
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--run-id",
+                run_id,
+                "--provider",
+                "local",
+                "--",
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertFalse(marker.exists())
+            self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
     def test_wrap_returns_command_not_found_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

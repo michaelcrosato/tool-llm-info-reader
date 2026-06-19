@@ -925,6 +925,9 @@ def command_wrap(args: argparse.Namespace) -> int:
         command = command[1:]
     if not command:
         raise CliError("wrap requires a command after --")
+    run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
+    if args.run_id and find_ledger_run_record(args.data_dir, run_id) is not None:
+        raise CliError(f"duplicate run_id in ledger: {run_id}")
     started_at = now_utc()
     start_monotonic = time.perf_counter_ns()
     try:
@@ -945,7 +948,7 @@ def command_wrap(args: argparse.Namespace) -> int:
             source_type="local_recorder",
             source_detail={"command": command, "duration_clock": "monotonic"},
             status="failed",
-            run_id=validate_run_id(args.run_id) if args.run_id else new_id("run"),
+            run_id=run_id,
             exit_code=exit_code,
             notes=args.notes or str(exc),
         )
@@ -970,7 +973,7 @@ def command_wrap(args: argparse.Namespace) -> int:
         source_type="local_recorder",
         source_detail={"command": command, "duration_clock": "monotonic"},
         status="completed" if exit_code == 0 else "failed",
-        run_id=validate_run_id(args.run_id) if args.run_id else new_id("run"),
+        run_id=run_id,
         exit_code=exit_code,
         notes=args.notes,
     )

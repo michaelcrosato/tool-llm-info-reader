@@ -328,6 +328,8 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
         raise CliError(f"invalid run state at {path}: finished_at cannot be earlier than started_at")
     if run["status"] == "running" and finished_at is not None:
         raise CliError(f"invalid run state at {path}: field 'finished_at' must be absent when status is running")
+    if run["status"] == "running" and run.get("record_id") is not None:
+        raise CliError(f"invalid run state at {path}: field 'record_id' must be absent when status is running")
     if run["status"] in {"completed", "failed"} and finished_at is None:
         raise CliError(f"invalid run state at {path}: field 'finished_at' is required when status is finalized")
     if run["status"] in {"completed", "failed"}:

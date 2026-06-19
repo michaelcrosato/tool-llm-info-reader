@@ -480,6 +480,16 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
         raise ledger_record_error(path, line_no, "field 'source.type' must be a non-empty string")
     if source_type not in SOURCE_TYPES:
         raise ledger_record_error(path, line_no, f"field 'source.type' has unsupported value {source_type!r}")
+    duration_clock = source.get("duration_clock")
+    if duration_clock is not None:
+        if source_type != "local_recorder":
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'source.duration_clock' can only be set when source.type is local_recorder",
+            )
+        if duration_clock != "monotonic":
+            raise ledger_record_error(path, line_no, "field 'source.duration_clock' must be monotonic when present")
     if source_type == "provider_export":
         for field in PROVIDER_EXPORT_STRING_FIELDS:
             value = source.get(field)
@@ -632,6 +642,7 @@ def validate_ledger_duration(
     record: dict[str, Any],
     started_at: dt.datetime,
     finished_at: dt.datetime,
+    source: dict[str, Any],
     path: Path,
     line_no: int,
 ) -> None:
@@ -639,6 +650,8 @@ def validate_ledger_duration(
     duration_ms = record.get("duration_ms")
     if duration_ms is None:
         raise ledger_record_error(path, line_no, "field 'duration_ms' must be a non-negative integer")
+    if source.get("type") == "local_recorder" and source.get("duration_clock") == "monotonic":
+        return
     wall_duration_ms = int((finished_at - started_at).total_seconds() * 1000)
     if abs(duration_ms - wall_duration_ms) > DURATION_TIMESTAMP_TOLERANCE_MS:
         raise ledger_record_error(
@@ -659,15 +672,15 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
         raise CliError(f"invalid ledger record at {path}:{line_no}: record_hash mismatch")
     validate_ledger_schema_version(record, path, line_no)
     validate_ledger_metadata(record, path, line_no)
+    source = validate_ledger_object_field(record, path, line_no, "source")
+    validate_ledger_source(source, path, line_no)
     started_at = validate_ledger_time_field(record, path, line_no, "started_at")
     finished_at = validate_ledger_time_field(record, path, line_no, "finished_at")
     if finished_at < started_at:
         raise ledger_record_error(path, line_no, "finished_at cannot be earlier than started_at")
-    validate_ledger_duration(record, started_at, finished_at, path, line_no)
+    validate_ledger_duration(record, started_at, finished_at, source, path, line_no)
     usage = validate_ledger_object_field(record, path, line_no, "usage")
     billing = validate_ledger_object_field(record, path, line_no, "billing")
-    source = validate_ledger_object_field(record, path, line_no, "source")
-    validate_ledger_source(source, path, line_no)
     source_type = source["type"]
     validate_ledger_billing(billing, source_type, path, line_no)
     if source_type == "unavailable" and usage_has_values(usage):

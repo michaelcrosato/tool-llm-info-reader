@@ -5824,11 +5824,12 @@ class LlmUsageReaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
+            tracked_path = str((data_dir / "usage.json").resolve())
             tool.imported_state_path(data_dir).write_text(
                 json.dumps(
                     {
                         "files": {
-                            "usage.json": {
+                            tracked_path: {
                                 "sha256": "not-a-sha",
                                 "imported_at": "2026-06-18T20:00:00Z",
                                 "records": 1,
@@ -5842,15 +5843,40 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "invalid sha256"):
                 tool.load_imported_state(data_dir)
 
+    def test_watch_rejects_non_absolute_imported_state_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            entry = {
+                "sha256": "0" * 64,
+                "imported_at": "2026-06-18T20:00:00Z",
+                "records": 1,
+            }
+            padded_path = f" {str((data_dir / 'usage.json').resolve())} "
+
+            for tracked_path, expected in [
+                ("usage.json", "absolute paths"),
+                (padded_path, "leading or trailing whitespace"),
+            ]:
+                with self.subTest(tracked_path=tracked_path):
+                    tool.imported_state_path(data_dir).write_text(
+                        json.dumps({"files": {tracked_path: entry}}),
+                        encoding="utf-8",
+                    )
+
+                    with self.assertRaisesRegex(tool.CliError, expected):
+                        tool.load_imported_state(data_dir)
+
     def test_watch_rejects_relative_imported_state_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
+            tracked_path = str((data_dir / "usage.json").resolve())
             tool.imported_state_path(data_dir).write_text(
                 json.dumps(
                     {
                         "files": {
-                            "usage.json": {
+                            tracked_path: {
                                 "sha256": "0" * 64,
                                 "imported_at": "now",
                                 "records": 1,
@@ -5868,11 +5894,12 @@ class LlmUsageReaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             data_dir.mkdir()
+            tracked_path = str((data_dir / "usage.json").resolve())
             tool.imported_state_path(data_dir).write_text(
                 json.dumps(
                     {
                         "files": {
-                            "usage.json": {
+                            tracked_path: {
                                 "sha256": "0" * 64,
                                 "imported_at": "2026-06-18T20:00:00+00:00",
                                 "records": 1,

@@ -2357,6 +2357,14 @@ def load_imported_state(data_dir: Path) -> dict[str, Any]:
     for tracked_path, entry in files.items():
         if not isinstance(tracked_path, str) or not tracked_path:
             raise CliError(f"invalid imported state at {path}: file keys must be non-empty strings")
+        if tracked_path != tracked_path.strip():
+            raise CliError(f"invalid imported state at {path}: file keys must not have leading or trailing whitespace")
+        try:
+            parsed_tracked_path = Path(tracked_path)
+        except (OSError, ValueError) as exc:
+            raise CliError(f"invalid imported state at {path}: file keys must be absolute paths") from exc
+        if not parsed_tracked_path.is_absolute():
+            raise CliError(f"invalid imported state at {path}: file keys must be absolute paths")
         if not isinstance(entry, dict):
             raise CliError(f"invalid imported state at {path}: entry for {tracked_path!r} must be object")
         digest = entry.get("sha256")

@@ -2459,6 +2459,7 @@ def scan_inbox_once(args: argparse.Namespace) -> int:
                     "imported_at": to_iso(now_utc()),
                     "records": appended,
                 }
+                save_imported_state(args.data_dir, state)
         save_imported_state(args.data_dir, state)
         return imported
 

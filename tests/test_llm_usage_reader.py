@@ -5886,6 +5886,72 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "non-canonical imported_at"):
                 tool.load_imported_state(data_dir)
 
+    def test_watch_persists_successful_file_state_before_later_file_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            good = inbox / "a-good.json"
+            bad = inbox / "b-bad.json"
+            good.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 7,
+                                        "output_tokens": 3,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-5.4-mini",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bad.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+
+            with self.assertRaisesRegex(tool.CliError, "results"):
+                tool.scan_inbox_once(args)
+
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            state = tool.load_imported_state(data_dir)
+            self.assertEqual(set(state["files"]), {str(good.resolve())})
+            self.assertEqual(state["files"][str(good.resolve())]["records"], 1)
+
+            with self.assertRaisesRegex(tool.CliError, "results"):
+                tool.scan_inbox_once(args)
+
+            self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+            state = tool.load_imported_state(data_dir)
+            self.assertEqual(set(state["files"]), {str(good.resolve())})
+            self.assertEqual(state["files"][str(good.resolve())]["records"], 1)
+
     def test_watch_rejects_malformed_openai_export_instead_of_ignoring(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

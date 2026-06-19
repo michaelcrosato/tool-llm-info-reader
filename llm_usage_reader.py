@@ -1614,6 +1614,8 @@ def command_watch(args: argparse.Namespace) -> int:
 def command_show(args: argparse.Namespace) -> int:
     records = read_ledger(args.data_dir)
     limit = args.limit
+    if limit < 0:
+        raise CliError("--limit must be >= 0")
     selected = records[-limit:] if limit else records
     print(json.dumps(selected, indent=2, sort_keys=True))
     return 0

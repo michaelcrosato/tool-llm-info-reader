@@ -539,6 +539,30 @@ class LlmUsageReaderTests(unittest.TestCase):
                     code = self.run_cli(data_dir, "summary", f"--last={duration}")
                     self.assertEqual(code, 2)
 
+    def test_show_rejects_negative_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                ),
+                0,
+            )
+
+            code = self.run_cli(data_dir, "show", "--limit", "-1")
+
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
     def test_read_ledger_rejects_hash_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

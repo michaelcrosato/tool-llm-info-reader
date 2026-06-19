@@ -4,6 +4,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -4254,6 +4255,41 @@ class LlmUsageReaderTests(unittest.TestCase):
             state = tool.load_imported_state(data_dir)
             self.assertEqual(state["files"][str(duplicate)]["records"], 0)
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
+    def test_concurrent_watch_scans_preserve_imported_state_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox_a = root / "inbox-a"
+            inbox_b = root / "inbox-b"
+            inbox_a.mkdir()
+            inbox_b.mkdir()
+            file_a = inbox_a / "usage-a.json"
+            file_b = inbox_b / "usage-b.json"
+            file_a.write_text("{}", encoding="utf-8")
+            file_b.write_text("{}", encoding="utf-8")
+            barrier = threading.Barrier(2)
+
+            def fake_import(data_dir_arg: Path, path: Path, notes: str | None = None) -> tuple[bool, int]:
+                self.assertEqual(data_dir_arg, data_dir)
+                self.assertIsNone(notes)
+                try:
+                    barrier.wait(timeout=0.2)
+                except threading.BrokenBarrierError:
+                    pass
+                return True, 1
+
+            args_a = type("Args", (), {"data_dir": data_dir, "inbox": inbox_a, "notes": None})()
+            args_b = type("Args", (), {"data_dir": data_dir, "inbox": inbox_b, "notes": None})()
+            with mock.patch.object(tool, "import_file_by_type", side_effect=fake_import):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    imported = list(executor.map(tool.scan_inbox_once, [args_a, args_b]))
+
+            self.assertEqual(imported, [1, 1])
+            state = tool.load_imported_state(data_dir)
+            self.assertEqual(set(state["files"]), {str(file_a), str(file_b)})
+            self.assertEqual(state["files"][str(file_a)]["records"], 1)
+            self.assertEqual(state["files"][str(file_b)]["records"], 1)
 
     def test_watch_rejects_malformed_imported_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

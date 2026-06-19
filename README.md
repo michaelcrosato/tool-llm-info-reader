@@ -94,6 +94,7 @@ The default data directory is `data`.
 - `data/usage-ledger.lock`: process lock used while appending and deduplicating imports.
 - `data/runs/*.json`: in-progress/completed run state from `start`/`finish`.
 - `data/imported-files.json`: file hashes already imported by `watch`; malformed state is rejected.
+- `data/imported-files.lock`: process lock used while updating watcher import state.
 - `data/inbox`: optional directory for continuously imported provider export files.
 - `data/openai-exports`: saved raw responses from `fetch-openai`; repeated fetches for the same period use suffixed filenames instead of overwriting prior evidence.
 

@@ -1334,6 +1334,17 @@ def openai_export_path(save_dir: Path, kind: str, start: dt.datetime, end: dt.da
     return save_dir / f"openai-{kind}-{openai_export_slug(start)}-{openai_export_slug(end)}.json"
 
 
+def next_available_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    index = 1
+    while True:
+        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def openai_admin_url(base_url: str, endpoint: str, params: dict[str, Any]) -> str:
     query = urllib.parse.urlencode(params, doseq=True)
     return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}?{query}"
@@ -1598,7 +1609,7 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
             openai_fetch_params(start, end, args.bucket_width, group_by),
             api_key,
         )
-        usage_path = openai_export_path(save_dir, "usage", start, end)
+        usage_path = next_available_path(openai_export_path(save_dir, "usage", start, end))
         atomic_write_json(usage_path, usage_payload)
         records.extend(build_openai_usage_records(usage_path, args.default_model, args.notes))
         exports["usage_export"] = str(usage_path)
@@ -1610,7 +1621,7 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
             openai_fetch_params(start, end, args.bucket_width, ["line_item"]),
             api_key,
         )
-        costs_path = openai_export_path(save_dir, "costs", start, end)
+        costs_path = next_available_path(openai_export_path(save_dir, "costs", start, end))
         atomic_write_json(costs_path, costs_payload)
         records.extend(build_openai_cost_records(costs_path, args.notes))
         exports["costs_export"] = str(costs_path)

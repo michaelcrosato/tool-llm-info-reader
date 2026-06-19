@@ -550,7 +550,9 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
     kind = validate_ledger_required_string_field(record, path, line_no, "kind")
     if kind not in LEDGER_KINDS:
         raise ledger_record_error(path, line_no, f"field 'kind' has unsupported value {kind!r}")
-    validate_ledger_required_string_field(record, path, line_no, "provider")
+    provider = validate_ledger_required_string_field(record, path, line_no, "provider")
+    if provider != provider.strip():
+        raise ledger_record_error(path, line_no, "field 'provider' must not have leading or trailing whitespace")
     model = record.get("model")
     if model is not None and (not isinstance(model, str) or not model.strip()):
         raise ledger_record_error(path, line_no, "field 'model' must be a non-empty string or null")
@@ -746,7 +748,7 @@ def validate_run_id(run_id: str) -> str:
 def validate_provider(provider: str) -> str:
     if not isinstance(provider, str) or not provider.strip():
         raise CliError("--provider must be a non-empty string")
-    return provider
+    return provider.strip()
 
 
 def normalize_model(model: Any) -> str | None:

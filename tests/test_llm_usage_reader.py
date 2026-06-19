@@ -327,6 +327,47 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_strips_provider_for_summary_filters(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                " openai ",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "10",
+            )
+            self.assertEqual(code, 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(records[0]["provider"], "openai")
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": "openai",
+                    "model": None,
+                    "trusted_only": False,
+                    "data_dir": data_dir,
+                },
+            )()
+
+            summary = tool.summarize_records(
+                records,
+                tool.parse_time("2026-06-18T00:00:00Z"),
+                tool.parse_time("2026-06-19T00:00:00Z"),
+                args,
+            )
+
+            self.assertEqual(summary["totals"]["records"], 1)
+            self.assertEqual(summary["totals"]["tokens_consumed"], 10)
+
     def test_record_rejects_non_finite_manual_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -695,6 +736,33 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger = tool.ledger_path(data_dir)
             record = json.loads(ledger.read_text(encoding="utf-8"))
             record["provider"] = {"name": "openai"}
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "provider"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_whitespace_padded_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["provider"] = " openai "
             tool.refresh_record_hash(record)
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 

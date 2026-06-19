@@ -615,6 +615,9 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
         if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
             raise ledger_record_error(path, line_no, "field 'run_id' must be null or a valid run id")
     validate_ledger_optional_nonnegative_int(record, path, line_no, "exit_code")
+    exit_code = record.get("exit_code")
+    if status == "completed" and exit_code not in {None, 0}:
+        raise ledger_record_error(path, line_no, "field 'status' cannot be completed when exit_code is nonzero")
     validate_ledger_time_field(record, path, line_no, "created_at")
     host = validate_ledger_object_field(record, path, line_no, "host")
     validate_ledger_host(host, path, line_no)
@@ -995,6 +998,7 @@ def command_record(args: argparse.Namespace) -> int:
     finished_at = parse_time(args.finished_at, default=now_utc())
     if finished_at < started_at:
         raise CliError("finished time cannot be earlier than started time")
+    exit_code = positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None
     record = make_record(
         kind="run",
         provider=provider,
@@ -1005,9 +1009,9 @@ def command_record(args: argparse.Namespace) -> int:
         billing=make_billing(args),
         source_type=args.source,
         source_detail=None,
-        status=args.status,
+        status=args.status or ("completed" if exit_code in {None, 0} else "failed"),
         run_id=validate_run_id(args.run_id) if args.run_id else None,
-        exit_code=positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None,
+        exit_code=exit_code,
         notes=args.notes,
     )
     append_ledger(args.data_dir, [record])
@@ -1759,7 +1763,7 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--model", help="Model name")
     record.add_argument("--started-at", help="UTC ISO time, epoch seconds, YYYY-MM-DD, or now")
     record.add_argument("--finished-at", help="UTC ISO time, epoch seconds, YYYY-MM-DD, or now")
-    record.add_argument("--status", default="completed", choices=["completed", "failed", "incomplete"])
+    record.add_argument("--status", choices=["completed", "failed", "incomplete"])
     record.add_argument("--exit-code", help="Process/verification exit code")
     record.add_argument("--notes", help="Free-form note")
     add_usage_arguments(record)

@@ -49,6 +49,7 @@ SOURCE_TYPES = {
 }
 BILLING_SOURCES = {"provider_cost_api", "provider_export", "manual_attestation", "unavailable"}
 PROVIDER_BILLING_SOURCES = {"provider_cost_api", "provider_export"}
+PROVIDER_BILLING_STRING_FIELDS = ("line_item", "project_id", "api_key_id")
 TRUSTED_EXCLUDED_SOURCE_TYPES = {"manual_attestation", "unavailable", "legacy_self_reported"}
 MANUAL_SOURCE_TYPES = {"manual_attestation", "unavailable"}
 MANUAL_BILLING_SOURCES = BILLING_SOURCES - PROVIDER_BILLING_SOURCES
@@ -516,6 +517,18 @@ def validate_ledger_billing(billing: dict[str, Any], source_type: str, path: Pat
             raise ledger_record_error(path, line_no, "field 'billing.source' cannot be unavailable when actual_cost_usd is set")
         if billing.get("currency") != "usd":
             raise ledger_record_error(path, line_no, "field 'billing.currency' must be usd when actual_cost_usd is set")
+    for field in PROVIDER_BILLING_STRING_FIELDS:
+        value = billing.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise ledger_record_error(path, line_no, f"field 'billing.{field}' must be a non-empty string or null")
+        if value != value.strip():
+            raise ledger_record_error(
+                path,
+                line_no,
+                f"field 'billing.{field}' must not have leading or trailing whitespace",
+            )
 
 
 def usage_has_values(usage: dict[str, Any]) -> bool:

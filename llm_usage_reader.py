@@ -965,15 +965,46 @@ def command_wrap(args: argparse.Namespace) -> int:
         raise CliError(f"--cwd must be an existing directory: {cwd}")
     provider = validate_provider(args.provider)
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
-    if args.run_id and find_ledger_run_record(args.data_dir, run_id) is not None:
-        raise CliError(f"duplicate run_id in ledger: {run_id}")
-    started_at = now_utc()
-    start_monotonic = time.perf_counter_ns()
-    try:
-        completed = subprocess.run(command, cwd=str(cwd) if cwd is not None else None)
-        exit_code = completed.returncode
-    except FileNotFoundError as exc:
-        exit_code = 127
+    with exclusive_file_lock(run_lock_path(args.data_dir, run_id)):
+        if find_ledger_run_record(args.data_dir, run_id) is not None:
+            raise CliError(f"duplicate run_id in ledger: {run_id}")
+        started_at = now_utc()
+        start_monotonic = time.perf_counter_ns()
+        try:
+            completed = subprocess.run(command, cwd=str(cwd) if cwd is not None else None)
+            exit_code = completed.returncode
+        except FileNotFoundError as exc:
+            exit_code = 127
+            finished_at = now_utc()
+            duration_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)
+            record = make_record(
+                kind="run",
+                provider=provider,
+                model=args.model,
+                started_at=started_at,
+                finished_at=finished_at,
+                usage=blank_usage(),
+                billing=None,
+                source_type="local_recorder",
+                source_detail={"command": command, "duration_clock": "monotonic"},
+                status="failed",
+                run_id=run_id,
+                exit_code=exit_code,
+                notes=args.notes or str(exc),
+            )
+            record["duration_ms"] = duration_ms
+            record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"
+            refresh_record_hash(record)
+            append_ledger(args.data_dir, [record])
+            print(
+                json.dumps(
+                    {"record_id": record["record_id"], "exit_code": exit_code, "ledger": str(ledger_path(args.data_dir))},
+                    indent=2,
+                )
+            )
+            print(f"command not found: {command[0]}", file=sys.stderr)
+            return exit_code
+
         finished_at = now_utc()
         duration_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)
         record = make_record(
@@ -986,40 +1017,15 @@ def command_wrap(args: argparse.Namespace) -> int:
             billing=None,
             source_type="local_recorder",
             source_detail={"command": command, "duration_clock": "monotonic"},
-            status="failed",
+            status="completed" if exit_code == 0 else "failed",
             run_id=run_id,
             exit_code=exit_code,
-            notes=args.notes or str(exc),
+            notes=args.notes,
         )
         record["duration_ms"] = duration_ms
         record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"
         refresh_record_hash(record)
         append_ledger(args.data_dir, [record])
-        print(json.dumps({"record_id": record["record_id"], "exit_code": exit_code, "ledger": str(ledger_path(args.data_dir))}, indent=2))
-        print(f"command not found: {command[0]}", file=sys.stderr)
-        return exit_code
-
-    finished_at = now_utc()
-    duration_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)
-    record = make_record(
-        kind="run",
-        provider=provider,
-        model=args.model,
-        started_at=started_at,
-        finished_at=finished_at,
-        usage=blank_usage(),
-        billing=None,
-        source_type="local_recorder",
-        source_detail={"command": command, "duration_clock": "monotonic"},
-        status="completed" if exit_code == 0 else "failed",
-        run_id=run_id,
-        exit_code=exit_code,
-        notes=args.notes,
-    )
-    record["duration_ms"] = duration_ms
-    record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"
-    refresh_record_hash(record)
-    append_ledger(args.data_dir, [record])
     print(json.dumps({"record_id": record["record_id"], "exit_code": exit_code, "ledger": str(ledger_path(args.data_dir))}, indent=2))
     return exit_code
 

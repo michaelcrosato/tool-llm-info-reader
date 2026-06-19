@@ -3004,6 +3004,54 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
 
+    def test_concurrent_wrap_same_run_id_runs_command_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            marker = root / "marker.txt"
+            run_id = "run_concurrent_wrap"
+            script = Path(tool.__file__).resolve()
+            wrapped_code = (
+                "from pathlib import Path; import time; "
+                f"Path({str(marker)!r}).open('a', encoding='utf-8').write('ran\\n'); "
+                "time.sleep(0.2)"
+            )
+            procs = [
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(script),
+                        "--data-dir",
+                        str(data_dir),
+                        "wrap",
+                        "--run-id",
+                        run_id,
+                        "--provider",
+                        "local",
+                        "--",
+                        sys.executable,
+                        "-c",
+                        wrapped_code,
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for _ in range(2)
+            ]
+
+            results = [proc.communicate(timeout=10) for proc in procs]
+            success_count = sum(1 for proc in procs if proc.returncode == 0)
+            self.assertEqual(
+                success_count,
+                1,
+                [(proc.returncode, stdout, stderr) for proc, (stdout, stderr) in zip(procs, results)],
+            )
+            self.assertEqual(marker.read_text(encoding="utf-8").splitlines(), ["ran"])
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["run_id"], run_id)
+
     def test_wrap_returns_command_not_found_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

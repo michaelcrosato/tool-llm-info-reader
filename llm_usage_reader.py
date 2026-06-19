@@ -2343,11 +2343,17 @@ def collect_anthropic_cost_rows(payload: Any) -> list[dict[str, Any]]:
             if not isinstance(result, dict):
                 raise CliError("Anthropic cost result must be an object")
             cost, currency = strict_anthropic_cost_amount(result)
+            # Currency is accepted case-insensitively, so canonicalize it before it
+            # feeds the import_key / result_identity hashes; otherwise a corrected
+            # amount whose currency casing also changed would evade conflict detection.
+            identity_result = dict(result)
+            if isinstance(identity_result.get("currency"), str):
+                identity_result["currency"] = identity_result["currency"].strip().upper()
             rows.append(
                 {
                     "started_at": started_at,
                     "finished_at": finished_at,
-                    "result": result,
+                    "result": identity_result,
                     "cost": cost,
                     "currency": currency,
                     "line_item": strict_anthropic_cost_optional_string(result, "description"),
@@ -2998,24 +3004,35 @@ def save_imported_state(data_dir: Path, state: dict[str, Any]) -> None:
 
 
 def classify_provider_export(payload: Any) -> str | None:
-    openai_kind = classify_openai_export(payload)
+    try:
+        openai_kind = classify_openai_export(payload)
+    except CliError:
+        # An object=="page" payload that fails OpenAI validation is definitively an
+        # OpenAI export problem (incomplete page, etc.), so re-raise. Otherwise the
+        # OpenAI path simply does not recognize this shape; fall through to Anthropic.
+        if isinstance(payload, dict) and payload.get("object") == "page":
+            raise
+        openai_kind = None
     if openai_kind is not None:
         return openai_kind
     return classify_anthropic_export(payload)
 
 
 def classify_anthropic_export(payload: Any) -> str | None:
-    if not isinstance(payload, dict) or payload.get("object") == "page":
+    is_report_shape = isinstance(payload, list) or (
+        isinstance(payload, dict)
+        and payload.get("object") != "page"
+        and isinstance(payload.get("data"), list)
+    )
+    if not is_report_shape:
         return None
-    if not isinstance(payload.get("data"), list):
-        return None
-    try:
-        buckets = list(iter_anthropic_buckets(payload))
-    except CliError:
-        return None
+    # An incomplete/paginated Anthropic report raises here (mirroring the OpenAI page
+    # behavior) so the watcher flags it instead of silently skipping a partial export.
+    buckets = list(iter_anthropic_buckets(payload))
     saw_cost = False
     saw_usage = False
     saw_other = False
+    saw_shape = False
     for bucket in buckets:
         if not isinstance(bucket, dict):
             continue
@@ -3024,6 +3041,7 @@ def classify_anthropic_export(payload: Any) -> str | None:
         results = bucket.get("results")
         if not isinstance(results, list):
             continue
+        saw_shape = True
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -3039,6 +3057,12 @@ def classify_anthropic_export(payload: Any) -> str | None:
         return "anthropic_costs"
     if saw_usage:
         return "anthropic_usage"
+    # A valid report shape with no importable rows (no buckets, or well-formed buckets
+    # whose results are empty) is an empty export; mark it handled so watch stops
+    # rescanning it. Reject content that merely has a data[] of non-bucket junk.
+    data_is_empty = isinstance(payload, dict) and payload.get("data") == []
+    if saw_shape or data_is_empty:
+        return "anthropic_empty"
     return None
 
 
@@ -3084,7 +3108,7 @@ def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) ->
     kind = classify_provider_export(payload)
     if kind is None:
         return False, 0
-    if kind == "openai_empty":
+    if kind in {"openai_empty", "anthropic_empty"}:
         return True, 0
     records: list[dict[str, Any]] = []
     if kind in {"openai_usage", "mixed"}:

@@ -60,6 +60,94 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(summary["totals"]["tokens_consumed"], 125)
             self.assertEqual(summary["totals"]["billed_tokens"], 125)
 
+    def test_summary_marks_unknown_requests_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "100",
+                    "--output-tokens",
+                    "25",
+                ),
+                0,
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": None,
+                    "model": None,
+                    "trusted_only": False,
+                    "data_dir": data_dir,
+                },
+            )()
+
+            summary = tool.summarize_records(
+                tool.read_ledger(data_dir),
+                tool.parse_time("2026-06-18T00:00:00Z"),
+                tool.parse_time("2026-06-19T00:00:00Z"),
+                args,
+            )
+
+            self.assertIsNone(summary["rows"][0]["requests"])
+            self.assertEqual(summary["rows"][0]["requests_known_records"], 0)
+            self.assertIsNone(summary["totals"]["requests"])
+            self.assertEqual(summary["totals"]["requests_known_records"], 0)
+
+    def test_summary_preserves_known_zero_requests(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--requests",
+                    "0",
+                ),
+                0,
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": None,
+                    "model": None,
+                    "trusted_only": False,
+                    "data_dir": data_dir,
+                },
+            )()
+
+            summary = tool.summarize_records(
+                tool.read_ledger(data_dir),
+                tool.parse_time("2026-06-18T00:00:00Z"),
+                tool.parse_time("2026-06-19T00:00:00Z"),
+                args,
+            )
+
+            self.assertEqual(summary["rows"][0]["requests"], 0)
+            self.assertEqual(summary["rows"][0]["requests_known_records"], 1)
+            self.assertEqual(summary["totals"]["requests"], 0)
+            self.assertEqual(summary["totals"]["requests_known_records"], 1)
+
     def test_summary_excludes_partial_overlap_records(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

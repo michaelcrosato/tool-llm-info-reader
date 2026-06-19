@@ -618,6 +618,8 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
     exit_code = record.get("exit_code")
     if status == "completed" and exit_code not in {None, 0}:
         raise ledger_record_error(path, line_no, "field 'status' cannot be completed when exit_code is nonzero")
+    if status == "failed" and exit_code == 0:
+        raise ledger_record_error(path, line_no, "field 'status' cannot be failed when exit_code is zero")
     validate_ledger_time_field(record, path, line_no, "created_at")
     host = validate_ledger_object_field(record, path, line_no, "host")
     validate_ledger_host(host, path, line_no)

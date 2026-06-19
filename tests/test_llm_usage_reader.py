@@ -5281,6 +5281,50 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "invalid sha256"):
                 tool.load_imported_state(data_dir)
 
+    def test_watch_rejects_relative_imported_state_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            tool.imported_state_path(data_dir).write_text(
+                json.dumps(
+                    {
+                        "files": {
+                            "usage.json": {
+                                "sha256": "0" * 64,
+                                "imported_at": "now",
+                                "records": 1,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(tool.CliError, "non-canonical imported_at"):
+                tool.load_imported_state(data_dir)
+
+    def test_watch_rejects_offset_imported_state_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            tool.imported_state_path(data_dir).write_text(
+                json.dumps(
+                    {
+                        "files": {
+                            "usage.json": {
+                                "sha256": "0" * 64,
+                                "imported_at": "2026-06-18T20:00:00+00:00",
+                                "records": 1,
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(tool.CliError, "non-canonical imported_at"):
+                tool.load_imported_state(data_dir)
+
     def test_watch_rejects_malformed_openai_export_instead_of_ignoring(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

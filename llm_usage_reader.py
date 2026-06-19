@@ -321,16 +321,24 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
             raise CliError(f"invalid run state at {path}: field 'model' must be a non-empty string or null")
         if model != model.strip():
             raise CliError(f"invalid run state at {path}: field 'model' must not have leading or trailing whitespace")
-    started_at = run.get("started_at")
-    if not isinstance(started_at, str) or not started_at:
-        raise CliError(f"invalid run state at {path}: field 'started_at' must be a non-empty time string")
-    try:
-        parsed_started_at = parse_time(started_at)
-    except CliError as exc:
-        raise CliError(f"invalid run state at {path}: field 'started_at' is invalid: {exc}") from exc
-    if started_at != to_iso(parsed_started_at):
-        raise CliError(f"invalid run state at {path}: field 'started_at' must be a canonical UTC time string")
+    validate_run_state_time_field(run, path, "started_at", required=True)
+    validate_run_state_time_field(run, path, "created_at", required=False)
+    validate_run_state_time_field(run, path, "finished_at", required=False)
     return run
+
+
+def validate_run_state_time_field(run: dict[str, Any], path: Path, field: str, *, required: bool) -> None:
+    value = run.get(field)
+    if value is None and not required:
+        return
+    if not isinstance(value, str) or not value:
+        raise CliError(f"invalid run state at {path}: field {field!r} must be a non-empty time string")
+    try:
+        parsed = parse_time(value)
+    except CliError as exc:
+        raise CliError(f"invalid run state at {path}: field {field!r} is invalid: {exc}") from exc
+    if value != to_iso(parsed):
+        raise CliError(f"invalid run state at {path}: field {field!r} must be a canonical UTC time string")
 
 
 def atomic_write_json(path: Path, value: Any) -> None:

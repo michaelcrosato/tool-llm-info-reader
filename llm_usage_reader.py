@@ -330,6 +330,12 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
         raise CliError(f"invalid run state at {path}: field 'finished_at' must be absent when status is running")
     if run["status"] in {"completed", "failed"} and finished_at is None:
         raise CliError(f"invalid run state at {path}: field 'finished_at' is required when status is finalized")
+    if run["status"] in {"completed", "failed"}:
+        record_id = run.get("record_id")
+        if not isinstance(record_id, str) or not record_id.strip():
+            raise CliError(f"invalid run state at {path}: field 'record_id' is required when status is finalized")
+        if record_id != record_id.strip():
+            raise CliError(f"invalid run state at {path}: field 'record_id' must not have leading or trailing whitespace")
     return run
 
 

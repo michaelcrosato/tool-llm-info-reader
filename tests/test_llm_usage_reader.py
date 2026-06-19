@@ -2755,6 +2755,27 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_wrap_rejects_empty_provider_before_running_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            marker = root / "marker.txt"
+
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--provider",
+                "",
+                "--",
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertFalse(marker.exists())
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_wrap_rejects_duplicate_run_id_before_running_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

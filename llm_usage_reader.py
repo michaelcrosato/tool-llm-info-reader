@@ -743,6 +743,12 @@ def validate_run_id(run_id: str) -> str:
     return run_id
 
 
+def validate_provider(provider: str) -> str:
+    if not isinstance(provider, str) or not provider.strip():
+        raise CliError("--provider must be a non-empty string")
+    return provider
+
+
 def normalize_model(model: Any) -> str | None:
     if model is None:
         return None
@@ -945,6 +951,7 @@ def command_wrap(args: argparse.Namespace) -> int:
     cwd = Path(args.cwd) if args.cwd else None
     if cwd is not None and not cwd.is_dir():
         raise CliError(f"--cwd must be an existing directory: {cwd}")
+    provider = validate_provider(args.provider)
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
     if args.run_id and find_ledger_run_record(args.data_dir, run_id) is not None:
         raise CliError(f"duplicate run_id in ledger: {run_id}")
@@ -959,7 +966,7 @@ def command_wrap(args: argparse.Namespace) -> int:
         duration_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)
         record = make_record(
             kind="run",
-            provider=args.provider,
+            provider=provider,
             model=args.model,
             started_at=started_at,
             finished_at=finished_at,
@@ -984,7 +991,7 @@ def command_wrap(args: argparse.Namespace) -> int:
     duration_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)
     record = make_record(
         kind="run",
-        provider=args.provider,
+        provider=provider,
         model=args.model,
         started_at=started_at,
         finished_at=finished_at,

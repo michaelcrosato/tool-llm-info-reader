@@ -273,8 +273,13 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
         raise CliError(f"invalid run state at {path}: run_id mismatch")
     if run.get("status") not in {"running", "completed"}:
         raise CliError(f"invalid run state at {path}: status must be running or completed")
-    if run.get("started_at") is None:
-        raise CliError(f"invalid run state at {path}: missing started_at")
+    started_at = run.get("started_at")
+    if not isinstance(started_at, str) or not started_at:
+        raise CliError(f"invalid run state at {path}: field 'started_at' must be a non-empty time string")
+    try:
+        parse_time(started_at)
+    except CliError as exc:
+        raise CliError(f"invalid run state at {path}: field 'started_at' is invalid: {exc}") from exc
     return run
 
 

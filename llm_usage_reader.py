@@ -1115,6 +1115,15 @@ def is_openai_bucket_like(bucket: Any) -> bool:
     )
 
 
+def openai_result_object(result: dict[str, Any]) -> str:
+    value = result.get("object")
+    if not isinstance(value, str) or not value:
+        raise CliError("OpenAI bucket result field 'object' must be a non-empty string")
+    if value.startswith("organization.usage.") or value == "organization.costs.result":
+        return value
+    raise CliError(f"unsupported OpenAI bucket result object {value!r}")
+
+
 def build_openai_usage_records(path: Path, default_model: str | None, notes: str | None) -> list[dict[str, Any]]:
     payload = load_json_file(path)
     records: list[dict[str, Any]] = []
@@ -1125,7 +1134,7 @@ def build_openai_usage_records(path: Path, default_model: str | None, notes: str
         for result in results:
             if not isinstance(result, dict):
                 raise CliError("OpenAI usage result must be an object")
-            object_name = str(result.get("object") or "")
+            object_name = openai_result_object(result)
             if not object_name.startswith("organization.usage."):
                 continue
             usage = normalize_openai_usage_result(result)
@@ -1176,7 +1185,8 @@ def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, A
         for result in results:
             if not isinstance(result, dict):
                 raise CliError("OpenAI cost result must be an object")
-            if result.get("object") != "organization.costs.result":
+            object_name = openai_result_object(result)
+            if object_name != "organization.costs.result":
                 continue
             cost, currency = strict_openai_cost_amount(result)
             records.append(
@@ -1481,7 +1491,7 @@ def classify_provider_export(payload: Any) -> str | None:
         for result in openai_bucket_results(bucket):
             if not isinstance(result, dict):
                 raise CliError("OpenAI bucket result must be an object")
-            obj = str(result.get("object") or "")
+            obj = openai_result_object(result)
             saw_usage = saw_usage or obj.startswith("organization.usage.")
             saw_cost = saw_cost or obj == "organization.costs.result"
     if saw_usage and not saw_cost:

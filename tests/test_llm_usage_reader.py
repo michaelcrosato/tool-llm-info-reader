@@ -1315,6 +1315,38 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_openai_usage_import_rejects_unknown_result_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.telemetry.future.result",
+                                        "total_tokens": 15,
+                                        "model": "gpt-5.4",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(sample))
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_openai_usage_import_rejects_usage_result_without_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
@@ -2153,6 +2185,42 @@ class LlmUsageReaderTests(unittest.TestCase):
             args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
 
             with self.assertRaisesRegex(tool.CliError, "results"):
+                tool.scan_inbox_once(args)
+
+            self.assertEqual(tool.load_imported_state(data_dir), {"files": {}})
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_watch_rejects_unknown_openai_result_instead_of_marking_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "future-openai.json").write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.telemetry.future.result",
+                                        "total_tokens": 15,
+                                        "model": "gpt-5.4",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+
+            with self.assertRaisesRegex(tool.CliError, "unsupported OpenAI bucket result object"):
                 tool.scan_inbox_once(args)
 
             self.assertEqual(tool.load_imported_state(data_dir), {"files": {}})

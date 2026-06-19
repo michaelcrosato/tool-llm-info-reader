@@ -10,7 +10,7 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 - Imported OpenAI organization usage buckets, including model name when the export was grouped by model.
 - Imported OpenAI organization cost buckets.
 - Idempotent OpenAI imports that skip previously imported bucket rows.
-- Fail-closed OpenAI imports for malformed numeric usage or cost fields.
+- Fail-closed OpenAI imports for malformed or unsupported usage/cost export fields.
 - Manual token/cost entries, clearly marked as `manual_attestation`.
 - Period summaries by provider and model.
 - Continuous polling of an inbox directory for provider export JSON files.

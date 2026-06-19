@@ -7,6 +7,7 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 ## What It Can Track
 
 - Start time, finish time, duration, provider, model, exit code, and host details for local runs.
+- The agent/tool that produced a run (for example `claude-desktop`, `grok-cli`, `codex`, or `antigravity`) and a best-effort shell name, captured under `host.client` and `host.shell`.
 - Imported OpenAI organization completions usage buckets, including model name when the export was grouped by model.
 - Imported OpenAI organization cost buckets.
 - Direct OpenAI Admin API usage/cost fetches for a requested period when `OPENAI_ADMIN_KEY` is available.
@@ -53,6 +54,17 @@ Wrap any command to capture machine-observed start/finish/duration:
 ```powershell
 python .\llm_usage_reader.py wrap --provider local --model unknown -- python --version
 ```
+
+`provider` and `model` are free-form, so local runs from any vendor are first-class — for example `--provider anthropic --model claude-opus-4-8`, `--provider xai --model grok-4`, `--provider google --model gemini-3-pro`, or `--provider openai --model gpt-5.4`. (Structured provider imports below are currently OpenAI-only.)
+
+Record which agent/tool produced a run with `--client` on `start`, `finish`, `record`, and `wrap`:
+
+```powershell
+python .\llm_usage_reader.py record --provider anthropic --model claude-opus-4-8 --client claude-desktop `
+  --started-at 2026-06-18T20:00:00Z --finished-at 2026-06-18T20:05:00Z --input-tokens 1200 --output-tokens 300
+```
+
+Instead of passing `--client` every time, a harness can set it once via the `LLM_USAGE_CLIENT` environment variable (the `--client` flag wins when both are present). The shell is auto-detected best-effort from `SHELL` (bash, zsh, Git Bash) or from PowerShell 6+; native Windows shells cannot be told apart reliably from the environment, so set `LLM_USAGE_SHELL` to record the shell explicitly (the operating system is always captured under `host.os`). For a `start`/`finish` pair, the client captured at `start` carries through to the finished record unless `finish` supplies its own; the precedence at finish is the `--client` flag, then an `LLM_USAGE_CLIENT` value present at finish time, then the start client.
 
 Import OpenAI organization completions usage and costs JSON responses:
 
@@ -128,6 +140,8 @@ Each ledger record includes:
 - `billing.actual_cost_usd`
 - `source.type`
 - `record_hash`
+
+Each record also carries a `host` object describing where it ran: machine and OS details, plus a best-effort `host.shell` and an optional `host.client` naming the agent/tool that produced the run. These are covered by `record_hash`, so they cannot be altered without detection.
 
 ## Recommended Workflow
 

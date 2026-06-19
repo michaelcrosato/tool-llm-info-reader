@@ -3051,6 +3051,39 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertIn("result_identity", records[0]["source"])
             self.assertEqual(records[0]["usage"]["tokens_consumed"], 15)
 
+    def test_import_openai_usage_rejects_empty_default_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 10,
+                                        "output_tokens": 5,
+                                        "num_model_requests": 1,
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(sample), "--default-model", "")
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_import_openai_usage_records_absolute_source_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -5144,6 +5177,29 @@ class LlmUsageReaderTests(unittest.TestCase):
                     "2026-06-18",
                     "--to",
                     "2026-06-19",
+                )
+
+            self.assertEqual(code, 2)
+            get_json.assert_not_called()
+            self.assertFalse((data_dir / "openai-exports").exists())
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_fetch_openai_rejects_empty_default_model_before_fetch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            with mock.patch.dict(os.environ, {"OPENAI_ADMIN_KEY": "sk-admin-test"}), mock.patch.object(
+                tool,
+                "openai_admin_get_json",
+            ) as get_json:
+                code = self.run_cli(
+                    data_dir,
+                    "fetch-openai",
+                    "--from",
+                    "2026-06-18",
+                    "--to",
+                    "2026-06-19",
+                    "--default-model",
+                    "",
                 )
 
             self.assertEqual(code, 2)

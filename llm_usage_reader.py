@@ -1881,7 +1881,8 @@ def build_openai_usage_records(path: Path, default_model: str | None, notes: str
 
 
 def command_import_openai_usage(args: argparse.Namespace) -> int:
-    records = build_openai_usage_records(args.file, args.default_model, args.notes)
+    default_model = normalize_cli_model(args.default_model)
+    records = build_openai_usage_records(args.file, default_model, args.notes)
     count = append_ledger(args.data_dir, records)
     print(json.dumps({"appended": count, "ledger": str(ledger_path(args.data_dir))}, indent=2))
     return 0
@@ -1965,6 +1966,7 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
         raise CliError("--bucket-width must be a non-empty string")
     if not args.api_key_env.strip():
         raise CliError("--api-key-env must be a non-empty environment variable name")
+    default_model = normalize_cli_model(args.default_model)
     api_key = os.environ.get(args.api_key_env)
     if not api_key:
         raise CliError(f"environment variable {args.api_key_env} is not set")
@@ -1993,7 +1995,7 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
 
     if "usage" in payloads:
         usage_path = write_new_json(openai_export_path(save_dir, "usage", start, end), payloads["usage"])
-        records.extend(build_openai_usage_records(usage_path, args.default_model, args.notes))
+        records.extend(build_openai_usage_records(usage_path, default_model, args.notes))
         exports["usage_export"] = str(usage_path)
 
     if "costs" in payloads:

@@ -1062,7 +1062,10 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
                 "field 'billing.source' must be unavailable when source.type is local_recorder",
             )
     validate_ledger_usage(usage, path, line_no)
-    if source_type in USAGE_UNAVAILABLE_REASON_SOURCES and usage_unavailable_reason(usage) is None:
+    if (
+        source_type in USAGE_UNAVAILABLE_REASON_SOURCES
+        or (source_type == "manual_attestation" and not usage_has_values(usage))
+    ) and usage_unavailable_reason(usage) is None:
         raise ledger_record_error(
             path,
             line_no,

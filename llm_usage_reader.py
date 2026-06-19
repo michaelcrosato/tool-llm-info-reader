@@ -1128,6 +1128,7 @@ def build_openai_usage_records(path: Path, default_model: str | None, notes: str
     payload = load_json_file(path)
     records: list[dict[str, Any]] = []
     detail = source_file_detail(path)
+    saw_cost_result = False
     for bucket in iter_openai_buckets(payload):
         results = openai_bucket_results(bucket)
         started_at, finished_at = openai_bucket_times(bucket)
@@ -1136,6 +1137,7 @@ def build_openai_usage_records(path: Path, default_model: str | None, notes: str
                 raise CliError("OpenAI usage result must be an object")
             object_name = openai_result_object(result)
             if not object_name.startswith("organization.usage."):
+                saw_cost_result = True
                 continue
             usage = normalize_openai_usage_result(result)
             if usage["tokens_consumed"] is None and usage["requests"] is None:
@@ -1165,6 +1167,8 @@ def build_openai_usage_records(path: Path, default_model: str | None, notes: str
                     notes=notes,
                 )
             )
+    if not records and saw_cost_result:
+        raise CliError("OpenAI usage import found only cost results; use import-openai-costs")
     return records
 
 
@@ -1179,6 +1183,7 @@ def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, A
     payload = load_json_file(path)
     records: list[dict[str, Any]] = []
     detail = source_file_detail(path)
+    saw_usage_result = False
     for bucket in iter_openai_buckets(payload):
         results = openai_bucket_results(bucket)
         started_at, finished_at = openai_bucket_times(bucket)
@@ -1187,6 +1192,7 @@ def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, A
                 raise CliError("OpenAI cost result must be an object")
             object_name = openai_result_object(result)
             if object_name != "organization.costs.result":
+                saw_usage_result = True
                 continue
             cost, currency = strict_openai_cost_amount(result)
             records.append(
@@ -1222,6 +1228,8 @@ def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, A
                     notes=notes,
                 )
             )
+    if not records and saw_usage_result:
+        raise CliError("OpenAI cost import found only usage results; use import-openai-usage")
     return records
 
 

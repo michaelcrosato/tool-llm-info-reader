@@ -59,6 +59,8 @@ python .\llm_usage_reader.py import-openai-usage --file .\samples\openai_usage_r
 python .\llm_usage_reader.py import-openai-costs --file .\samples\openai_costs_response.json
 ```
 
+Use the matching import command for the export family; a cost-only export passed to `import-openai-usage`, or a usage-only export passed to `import-openai-costs`, is rejected rather than treated as an empty import.
+
 Summarize a period:
 
 ```powershell

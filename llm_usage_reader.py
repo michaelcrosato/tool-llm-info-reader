@@ -1896,6 +1896,10 @@ def imported_state_path(data_dir: Path) -> Path:
     return data_dir / "imported-files.json"
 
 
+def imported_state_lock_path(data_dir: Path) -> Path:
+    return data_dir / "imported-files.lock"
+
+
 def load_imported_state(data_dir: Path) -> dict[str, Any]:
     path = imported_state_path(data_dir)
     if not path.exists():
@@ -1990,23 +1994,24 @@ def scan_inbox_once(args: argparse.Namespace) -> int:
     ensure_data_dir(args.data_dir)
     inbox = args.inbox
     inbox.mkdir(parents=True, exist_ok=True)
-    state = load_imported_state(args.data_dir)
-    imported = 0
-    for path in sorted(inbox.glob("*.json")):
-        digest = file_sha256(path)
-        previous = state["files"].get(str(path))
-        if previous and previous.get("sha256") == digest:
-            continue
-        recognized, appended = import_file_by_type(args.data_dir, path, notes=args.notes)
-        if recognized:
-            imported += appended
-            state["files"][str(path)] = {
-                "sha256": digest,
-                "imported_at": to_iso(now_utc()),
-                "records": appended,
-            }
-    save_imported_state(args.data_dir, state)
-    return imported
+    with exclusive_file_lock(imported_state_lock_path(args.data_dir)):
+        state = load_imported_state(args.data_dir)
+        imported = 0
+        for path in sorted(inbox.glob("*.json")):
+            digest = file_sha256(path)
+            previous = state["files"].get(str(path))
+            if previous and previous.get("sha256") == digest:
+                continue
+            recognized, appended = import_file_by_type(args.data_dir, path, notes=args.notes)
+            if recognized:
+                imported += appended
+                state["files"][str(path)] = {
+                    "sha256": digest,
+                    "imported_at": to_iso(now_utc()),
+                    "records": appended,
+                }
+        save_imported_state(args.data_dir, state)
+        return imported
 
 
 def command_watch(args: argparse.Namespace) -> int:

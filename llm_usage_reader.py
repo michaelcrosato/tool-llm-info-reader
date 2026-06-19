@@ -1393,6 +1393,7 @@ def fetch_openai_admin_pages(
 ) -> dict[str, Any]:
     page_params = dict(params)
     buckets: list[Any] = []
+    seen_pages: set[str] = set()
     while True:
         payload = openai_admin_get_json(base_url, endpoint, page_params, api_key)
         if not isinstance(payload, dict) or payload.get("object") != "page":
@@ -1401,11 +1402,17 @@ def fetch_openai_admin_pages(
         if not isinstance(data, list):
             raise CliError(f"OpenAI Admin API endpoint {endpoint} returned a page without data[]")
         buckets.extend(data)
-        if not payload.get("has_more"):
+        has_more = payload.get("has_more")
+        if not isinstance(has_more, bool):
+            raise CliError(f"OpenAI Admin API endpoint {endpoint} returned a page with non-boolean has_more")
+        if not has_more:
             return {"object": "page", "data": buckets, "has_more": False, "next_page": None}
         next_page = payload.get("next_page")
         if not isinstance(next_page, str) or not next_page:
             raise CliError(f"OpenAI Admin API endpoint {endpoint} set has_more without next_page")
+        if next_page in seen_pages:
+            raise CliError(f"OpenAI Admin API endpoint {endpoint} repeated next_page {next_page!r}")
+        seen_pages.add(next_page)
         page_params["page"] = next_page
 
 

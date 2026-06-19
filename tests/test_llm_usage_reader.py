@@ -3994,6 +3994,54 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["record_id"], first_record_id)
 
+    def test_finish_records_absolute_run_file_for_relative_data_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            child = root / "child"
+            child.mkdir()
+            run_id = "run_absolute_source_file"
+            previous_cwd = Path.cwd()
+            try:
+                os.chdir(root)
+                self.assertEqual(
+                    self.run_cli(
+                        Path("data"),
+                        "start",
+                        "--run-id",
+                        run_id,
+                        "--provider",
+                        "openai",
+                        "--model",
+                        "gpt-5.4",
+                        "--started-at",
+                        "2026-06-18T20:00:00Z",
+                    ),
+                    0,
+                )
+                os.chdir(child)
+                self.assertEqual(
+                    self.run_cli(
+                        Path("..") / "data",
+                        "finish",
+                        "--run-id",
+                        run_id,
+                        "--finished-at",
+                        "2026-06-18T20:01:00Z",
+                        "--input-tokens",
+                        "10",
+                    ),
+                    0,
+                )
+            finally:
+                os.chdir(previous_cwd)
+
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            run_file = Path(records[0]["source"]["run_file"])
+            self.assertTrue(run_file.is_absolute())
+            self.assertEqual(run_file, (data_dir / "runs" / f"{run_id}.json").resolve())
+
     def test_finish_repairs_stale_run_state_without_duplicate_append(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

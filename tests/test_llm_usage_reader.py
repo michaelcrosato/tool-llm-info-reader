@@ -1766,6 +1766,80 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "source.file_sha256"):
                 tool.read_ledger(data_dir)
 
+    def test_read_ledger_rejects_usage_bucket_with_cost_provider_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 10,
+                                        "output_tokens": 5,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-5.4",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(self.run_cli(data_dir, "import-openai-usage", "--file", str(sample)), 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["source"]["provider_object"] = "organization.costs.result"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "provider_object"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_cost_bucket_with_usage_provider_object(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "costs.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.costs.result",
+                                        "amount": {"value": 0.06, "currency": "usd"},
+                                        "line_item": "Completions",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(self.run_cli(data_dir, "import-openai-costs", "--file", str(sample)), 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["source"]["provider_object"] = "organization.usage.completions.result"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "provider_object"):
+                tool.read_ledger(data_dir)
+
     def test_read_ledger_rejects_hash_valid_local_recorder_with_usage_values(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

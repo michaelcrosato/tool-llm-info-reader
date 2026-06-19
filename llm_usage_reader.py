@@ -1419,6 +1419,8 @@ def fetch_openai_admin_pages(
         if not isinstance(has_more, bool):
             raise CliError(f"OpenAI Admin API endpoint {endpoint} returned a page with non-boolean has_more")
         if not has_more:
+            if payload.get("next_page") is not None:
+                raise CliError(f"OpenAI Admin API endpoint {endpoint} returned next_page when has_more is false")
             return {"object": "page", "data": buckets, "has_more": False, "next_page": None}
         next_page = payload.get("next_page")
         if not isinstance(next_page, str) or not next_page:

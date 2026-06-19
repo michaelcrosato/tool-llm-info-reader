@@ -1088,8 +1088,7 @@ def is_openai_bucket_like(bucket: Any) -> bool:
     )
 
 
-def command_import_openai_usage(args: argparse.Namespace) -> int:
-    path = args.file
+def build_openai_usage_records(path: Path, default_model: str | None, notes: str | None) -> list[dict[str, Any]]:
     payload = load_json_file(path)
     records: list[dict[str, Any]] = []
     detail = source_file_detail(path)
@@ -1109,7 +1108,7 @@ def command_import_openai_usage(args: argparse.Namespace) -> int:
                 make_record(
                     kind="provider_usage_bucket",
                     provider="openai",
-                    model=normalize_model(result.get("model")) or args.default_model,
+                    model=normalize_model(result.get("model")) or default_model,
                     started_at=started_at,
                     finished_at=finished_at,
                     usage=usage,
@@ -1127,16 +1126,20 @@ def command_import_openai_usage(args: argparse.Namespace) -> int:
                         ),
                     },
                     status="completed",
-                    notes=args.notes,
+                    notes=notes,
                 )
             )
+    return records
+
+
+def command_import_openai_usage(args: argparse.Namespace) -> int:
+    records = build_openai_usage_records(args.file, args.default_model, args.notes)
     count = append_ledger(args.data_dir, records)
     print(json.dumps({"appended": count, "ledger": str(ledger_path(args.data_dir))}, indent=2))
     return 0
 
 
-def command_import_openai_costs(args: argparse.Namespace) -> int:
-    path = args.file
+def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, Any]]:
     payload = load_json_file(path)
     records: list[dict[str, Any]] = []
     detail = source_file_detail(path)
@@ -1179,9 +1182,14 @@ def command_import_openai_costs(args: argparse.Namespace) -> int:
                         ),
                     },
                     status="completed",
-                    notes=args.notes,
+                    notes=notes,
                 )
             )
+    return records
+
+
+def command_import_openai_costs(args: argparse.Namespace) -> int:
+    records = build_openai_cost_records(args.file, args.notes)
     count = append_ledger(args.data_dir, records)
     print(json.dumps({"appended": count, "ledger": str(ledger_path(args.data_dir))}, indent=2))
     return 0
@@ -1452,14 +1460,13 @@ def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) ->
         return False, 0
     if kind == "openai_empty":
         return True, 0
-    fake_args = argparse.Namespace(data_dir=data_dir, file=path, default_model=None, notes=notes)
-    before = len(read_ledger(data_dir))
+    records: list[dict[str, Any]] = []
     if kind in {"openai_usage", "mixed"}:
-        command_import_openai_usage(fake_args)
+        records.extend(build_openai_usage_records(path, None, notes))
     if kind in {"openai_costs", "mixed"}:
-        command_import_openai_costs(fake_args)
-    after = len(read_ledger(data_dir))
-    return True, max(0, after - before)
+        records.extend(build_openai_cost_records(path, notes))
+    count = append_ledger(data_dir, records)
+    return True, count
 
 
 def scan_inbox_once(args: argparse.Namespace) -> int:

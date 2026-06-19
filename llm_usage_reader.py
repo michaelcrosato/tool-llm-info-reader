@@ -567,6 +567,7 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
                     line_no,
                     f"field 'source.{field}' must be a sha256 hex string for provider_export",
                 )
+        validate_provider_export_file_evidence(source, path, line_no)
     if source_type in ADAPTER_EVIDENCE_SOURCE_TYPES:
         for field in ADAPTER_EVIDENCE_STRING_FIELDS:
             value = source.get(field)
@@ -584,6 +585,26 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
                     line_no,
                     f"field 'source.{field}' must be a sha256 hex string for {source_type}",
                 )
+
+
+def validate_provider_export_file_evidence(source: dict[str, Any], path: Path, line_no: int) -> None:
+    source_file = Path(source["file"])
+    try:
+        if not source_file.is_file():
+            return
+        actual_sha256 = file_sha256(source_file)
+    except (OSError, ValueError) as exc:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'source.file' could not be read for evidence verification",
+        ) from exc
+    if actual_sha256 != source["file_sha256"]:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'source.file_sha256' does not match source.file",
+        )
 
 
 def validate_ledger_billing(billing: dict[str, Any], source_type: str, path: Path, line_no: int) -> None:

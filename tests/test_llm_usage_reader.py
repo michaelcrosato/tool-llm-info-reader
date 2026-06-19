@@ -3930,6 +3930,70 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[0]["usage"]["input_tokens"], 10)
             self.assertEqual(records[1]["usage"]["input_tokens"], 20)
 
+    def test_atomic_write_json_uses_unique_temp_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "imported-files.json"
+            replace_sources: list[Path] = []
+            real_replace = Path.replace
+
+            def tracking_replace(self: Path, target_path: Path) -> Path:
+                replace_sources.append(self)
+                return real_replace(self, target_path)
+
+            with mock.patch.object(Path, "replace", autospec=True, side_effect=tracking_replace):
+                tool.atomic_write_json(target, {"index": 1})
+                tool.atomic_write_json(target, {"index": 2})
+
+            self.assertEqual(len(replace_sources), 2)
+            self.assertEqual(len({path.name for path in replace_sources}), 2)
+            self.assertTrue(
+                all(
+                    path.name.startswith(".imported-files.json.") and path.name.endswith(".tmp")
+                    for path in replace_sources
+                )
+            )
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["index"], 2)
+            self.assertEqual([path for path in target.parent.iterdir() if path.name.endswith(".tmp")], [])
+
+    def test_atomic_write_json_retries_transient_windows_replace_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "imported-files.json"
+            real_replace = Path.replace
+            attempts = 0
+
+            def flaky_replace(self: Path, target_path: Path) -> Path:
+                nonlocal attempts
+                attempts += 1
+                if attempts == 1:
+                    raise PermissionError("destination is temporarily busy")
+                return real_replace(self, target_path)
+
+            with mock.patch.object(Path, "replace", autospec=True, side_effect=flaky_replace), mock.patch.object(
+                tool.os,
+                "name",
+                "nt",
+            ), mock.patch.object(tool.time, "sleep") as sleep:
+                tool.atomic_write_json(target, {"index": 1})
+
+            self.assertEqual(attempts, 2)
+            sleep.assert_called_once()
+            self.assertEqual(json.loads(target.read_text(encoding="utf-8"))["index"], 1)
+            self.assertEqual([path for path in target.parent.iterdir() if path.name.endswith(".tmp")], [])
+
+    def test_atomic_write_json_survives_concurrent_writers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "imported-files.json"
+
+            def write_state(index: int) -> None:
+                tool.atomic_write_json(target, {"index": index})
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                list(executor.map(write_state, range(16)))
+
+            stored = json.loads(target.read_text(encoding="utf-8"))
+            self.assertIn(stored["index"], range(16))
+            self.assertEqual([path for path in target.parent.iterdir() if path.name.endswith(".tmp")], [])
+
     def test_write_new_json_allocates_unique_paths_concurrently(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp) / "evidence" / "openai-usage.json"

@@ -56,6 +56,49 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(summary["totals"]["tokens_consumed"], 125)
             self.assertEqual(summary["totals"]["billed_tokens"], 125)
 
+    def test_summary_excludes_partial_overlap_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:10:00Z",
+                "--input-tokens",
+                "100",
+                "--output-tokens",
+                "50",
+            )
+            self.assertEqual(code, 0)
+            records = tool.read_ledger(data_dir)
+            args = type(
+                "Args",
+                (),
+                {
+                    "provider": None,
+                    "model": None,
+                    "trusted_only": False,
+                    "data_dir": data_dir,
+                },
+            )()
+
+            summary = tool.summarize_records(
+                records,
+                tool.parse_time("2026-06-18T20:05:00Z"),
+                tool.parse_time("2026-06-18T20:06:00Z"),
+                args,
+            )
+
+            self.assertEqual(summary["totals"]["records"], 0)
+            self.assertIsNone(summary["totals"]["tokens_consumed"])
+            self.assertEqual(summary["partial_overlap_skipped"], 1)
+
     def test_trusted_summary_excludes_manual_billing_on_trusted_usage_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

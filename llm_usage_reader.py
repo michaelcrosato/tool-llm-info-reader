@@ -1228,6 +1228,12 @@ def record_overlaps(record: dict[str, Any], start: dt.datetime, end: dt.datetime
     return rec_start < end and rec_end > start
 
 
+def record_is_contained(record: dict[str, Any], start: dt.datetime, end: dt.datetime) -> bool:
+    rec_start = parse_time(record.get("started_at"))
+    rec_end = parse_time(record.get("finished_at"))
+    return rec_start >= start and rec_end <= end
+
+
 def decimal_add(left: Decimal, value: Any) -> Decimal:
     if value is None:
         return left
@@ -1263,8 +1269,12 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
     rows: dict[tuple[str, str], dict[str, Any]] = {}
     source_counts: dict[str, int] = {}
     skipped = 0
+    partial_overlap_skipped = 0
     for record in records:
         if not record_overlaps(record, start, end):
+            continue
+        if not record_is_contained(record, start, end):
+            partial_overlap_skipped += 1
             continue
         provider = str(record.get("provider") or "unknown")
         model = str(record.get("model") or "(unattributed)")
@@ -1334,6 +1344,7 @@ def summarize_records(records: list[dict[str, Any]], start: dt.datetime, end: dt
         "totals": render_row(totals),
         "source_counts": source_counts,
         "skipped": skipped,
+        "partial_overlap_skipped": partial_overlap_skipped,
         "ledger": str(ledger_path(args.data_dir)),
     }
 
@@ -1366,6 +1377,8 @@ def print_summary_table(summary: dict[str, Any]) -> None:
     print(f"Period: {summary['from']} to {summary['to']}")
     if not rows:
         print("No matching records.")
+        if summary.get("partial_overlap_skipped"):
+            print(f"Skipped partial-overlap records: {summary['partial_overlap_skipped']}")
         return
     columns = [
         ("provider", "Provider"),
@@ -1408,6 +1421,8 @@ def print_summary_table(summary: dict[str, Any]) -> None:
         f"actual_cost_usd={totals['actual_cost_usd'] if totals['actual_cost_usd'] is not None else 'unavailable'}"
     )
     print(f"Sources: {json.dumps(summary['source_counts'], sort_keys=True)}")
+    if summary.get("partial_overlap_skipped"):
+        print(f"Skipped partial-overlap records: {summary['partial_overlap_skipped']}")
 
 
 def command_summary(args: argparse.Namespace) -> int:

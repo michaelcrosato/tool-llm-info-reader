@@ -603,7 +603,11 @@ def validate_provider_export_file_evidence(source: dict[str, Any], path: Path, l
     source_file = Path(source["file"])
     try:
         if not source_file.is_file():
-            return
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'source.file' must identify an existing evidence file",
+            )
         actual_sha256 = file_sha256(source_file)
     except (OSError, ValueError) as exc:
         raise ledger_record_error(

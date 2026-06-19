@@ -715,6 +715,28 @@ def validate_provider_export_kind(record: dict[str, Any], source: dict[str, Any]
     raise ledger_record_error(path, line_no, "field 'source.type' cannot be provider_export unless kind is a provider bucket")
 
 
+def validate_provider_export_payload(
+    record: dict[str, Any],
+    usage: dict[str, Any],
+    billing: dict[str, Any],
+    path: Path,
+    line_no: int,
+) -> None:
+    kind = record["kind"]
+    if kind == "provider_usage_bucket" and billing.get("source") in PROVIDER_BILLING_SOURCES:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'billing.source' cannot be provider billing for provider_usage_bucket",
+        )
+    if kind == "provider_cost_bucket" and usage_has_values(usage):
+        raise ledger_record_error(
+            path,
+            line_no,
+            "usage values must be null for provider_cost_bucket",
+        )
+
+
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if not isinstance(record, dict):
         raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
@@ -751,6 +773,8 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
                 "field 'billing.source' must be unavailable when source.type is local_recorder",
             )
     validate_ledger_usage(usage, path, line_no)
+    if source_type == "provider_export":
+        validate_provider_export_payload(record, usage, billing, path, line_no)
 
 
 def read_ledger(data_dir: Path) -> list[dict[str, Any]]:

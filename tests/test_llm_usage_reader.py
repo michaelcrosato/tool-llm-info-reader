@@ -2326,6 +2326,39 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_finish_rejects_malformed_run_state_identity_metadata(self) -> None:
+        cases = [
+            ("badprovider", {"provider": ""}, "provider"),
+            ("badmodel", {"model": " gpt-5.4 "}, "model"),
+        ]
+        for run_id, overrides, expected_error in cases:
+            with self.subTest(run_id=run_id), tempfile.TemporaryDirectory() as tmp:
+                data_dir = Path(tmp) / "data"
+                runs_dir = data_dir / "runs"
+                runs_dir.mkdir(parents=True)
+                state = {
+                    "schema_version": tool.SCHEMA_VERSION,
+                    "run_id": run_id,
+                    "provider": "openai",
+                    "model": "gpt-5.4",
+                    "started_at": "2026-06-18T20:00:00Z",
+                    "status": "running",
+                }
+                state.update(overrides)
+                (runs_dir / f"{run_id}.json").write_text(json.dumps(state), encoding="utf-8")
+
+                code = self.run_cli(
+                    data_dir,
+                    "finish",
+                    "--run-id",
+                    run_id,
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                )
+
+                self.assertEqual(code, 2, expected_error)
+                self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_finish_rejects_completed_state_without_ledger_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

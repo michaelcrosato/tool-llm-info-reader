@@ -273,6 +273,17 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
         raise CliError(f"invalid run state at {path}: run_id mismatch")
     if run.get("status") not in {"running", "completed"}:
         raise CliError(f"invalid run state at {path}: status must be running or completed")
+    provider = run.get("provider")
+    if not isinstance(provider, str) or not provider.strip():
+        raise CliError(f"invalid run state at {path}: field 'provider' must be a non-empty string")
+    if provider != provider.strip():
+        raise CliError(f"invalid run state at {path}: field 'provider' must not have leading or trailing whitespace")
+    model = run.get("model")
+    if model is not None:
+        if not isinstance(model, str) or not model.strip():
+            raise CliError(f"invalid run state at {path}: field 'model' must be a non-empty string or null")
+        if model != model.strip():
+            raise CliError(f"invalid run state at {path}: field 'model' must not have leading or trailing whitespace")
     started_at = run.get("started_at")
     if not isinstance(started_at, str) or not started_at:
         raise CliError(f"invalid run state at {path}: field 'started_at' must be a non-empty time string")
@@ -918,7 +929,7 @@ def command_finish(args: argparse.Namespace) -> int:
         if args.provider is not None:
             provider = validate_provider(args.provider)
         else:
-            provider = run.get("provider") or "unknown"
+            provider = run["provider"]
         model = normalize_model(args.model) or normalize_model(run.get("model"))
         record = make_record(
             kind="run",

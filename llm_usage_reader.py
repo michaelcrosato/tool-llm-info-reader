@@ -559,6 +559,12 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
                     line_no,
                     f"field 'source.{field}' must be a non-empty string for provider_export",
                 )
+            if value != value.strip():
+                raise ledger_record_error(
+                    path,
+                    line_no,
+                    f"field 'source.{field}' must not have leading or trailing whitespace",
+                )
         for field in PROVIDER_EXPORT_SHA256_FIELDS:
             value = source.get(field)
             if not isinstance(value, str) or not SHA256_PATTERN.fullmatch(value):
@@ -576,6 +582,12 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
                     path,
                     line_no,
                     f"field 'source.{field}' must be a non-empty string for {source_type}",
+                )
+            if value != value.strip():
+                raise ledger_record_error(
+                    path,
+                    line_no,
+                    f"field 'source.{field}' must not have leading or trailing whitespace",
                 )
         for field in ADAPTER_EVIDENCE_SHA256_FIELDS:
             value = source.get(field)

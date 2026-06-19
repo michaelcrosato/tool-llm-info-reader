@@ -1,3 +1,4 @@
+import concurrent.futures
 import json
 import os
 import subprocess
@@ -3862,6 +3863,21 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(tool.file_sha256(second_path), records[1]["source"]["file_sha256"])
             self.assertEqual(records[0]["usage"]["input_tokens"], 10)
             self.assertEqual(records[1]["usage"]["input_tokens"], 20)
+
+    def test_write_new_json_allocates_unique_paths_concurrently(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "evidence" / "openai-usage.json"
+
+            def write_payload(index: int) -> Path:
+                return tool.write_new_json(base, {"index": index})
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+                paths = list(executor.map(write_payload, range(8)))
+
+            self.assertEqual(len(set(paths)), 8)
+            self.assertIn("openai-usage.json", {path.name for path in paths})
+            stored_indexes = sorted(json.loads(path.read_text(encoding="utf-8"))["index"] for path in paths)
+            self.assertEqual(stored_indexes, list(range(8)))
 
     def test_openai_cost_import_rejects_malformed_amount(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

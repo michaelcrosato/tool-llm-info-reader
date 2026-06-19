@@ -319,6 +319,21 @@ def atomic_write_json(path: Path, value: Any) -> None:
     tmp.replace(path)
 
 
+def write_new_json(path: Path, value: Any) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    content = json.dumps(value, indent=2, sort_keys=True) + "\n"
+    candidate = path
+    index = 1
+    while True:
+        try:
+            with candidate.open("x", encoding="utf-8") as fh:
+                fh.write(content)
+            return candidate
+        except FileExistsError:
+            candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+            index += 1
+
+
 def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
     ensure_data_dir(data_dir)
     path = ledger_path(data_dir)
@@ -1334,17 +1349,6 @@ def openai_export_path(save_dir: Path, kind: str, start: dt.datetime, end: dt.da
     return save_dir / f"openai-{kind}-{openai_export_slug(start)}-{openai_export_slug(end)}.json"
 
 
-def next_available_path(path: Path) -> Path:
-    if not path.exists():
-        return path
-    index = 1
-    while True:
-        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
-        if not candidate.exists():
-            return candidate
-        index += 1
-
-
 def openai_admin_url(base_url: str, endpoint: str, params: dict[str, Any]) -> str:
     query = urllib.parse.urlencode(params, doseq=True)
     return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}?{query}"
@@ -1609,8 +1613,7 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
             openai_fetch_params(start, end, args.bucket_width, group_by),
             api_key,
         )
-        usage_path = next_available_path(openai_export_path(save_dir, "usage", start, end))
-        atomic_write_json(usage_path, usage_payload)
+        usage_path = write_new_json(openai_export_path(save_dir, "usage", start, end), usage_payload)
         records.extend(build_openai_usage_records(usage_path, args.default_model, args.notes))
         exports["usage_export"] = str(usage_path)
 
@@ -1621,8 +1624,7 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
             openai_fetch_params(start, end, args.bucket_width, ["line_item"]),
             api_key,
         )
-        costs_path = next_available_path(openai_export_path(save_dir, "costs", start, end))
-        atomic_write_json(costs_path, costs_payload)
+        costs_path = write_new_json(openai_export_path(save_dir, "costs", start, end), costs_payload)
         records.extend(build_openai_cost_records(costs_path, args.notes))
         exports["costs_export"] = str(costs_path)
 

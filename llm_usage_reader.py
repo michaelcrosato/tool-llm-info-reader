@@ -288,9 +288,15 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
     path = ledger_path(data_dir)
     pending = list(records)
     with exclusive_file_lock(ledger_lock_path(data_dir)):
-        seen_import_keys = existing_import_keys(path)
+        seen_import_keys, seen_run_ids = existing_ledger_identities(path)
+        pending_run_ids: set[str] = set()
         for index, record in enumerate(pending, 1):
             validate_ledger_record(record, path, index)
+            run_id = ledger_run_id(record)
+            if run_id is not None:
+                if run_id in seen_run_ids or run_id in pending_run_ids:
+                    raise CliError(f"duplicate run_id in ledger: {run_id}")
+                pending_run_ids.add(run_id)
         count = 0
         with path.open("a", encoding="utf-8", newline="\n") as fh:
             for record in pending:
@@ -300,8 +306,18 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
                 fh.write(json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n")
                 if key:
                     seen_import_keys.add(key)
+                run_id = ledger_run_id(record)
+                if run_id is not None:
+                    seen_run_ids.add(run_id)
                 count += 1
     return count
+
+
+def ledger_run_id(record: dict[str, Any]) -> str | None:
+    if record.get("kind") != "run":
+        return None
+    value = record.get("run_id")
+    return value if isinstance(value, str) and value else None
 
 
 def import_key(record: dict[str, Any]) -> str | None:
@@ -313,9 +329,15 @@ def import_key(record: dict[str, Any]) -> str | None:
 
 
 def existing_import_keys(path: Path) -> set[str]:
+    keys, _ = existing_ledger_identities(path)
+    return keys
+
+
+def existing_ledger_identities(path: Path) -> tuple[set[str], set[str]]:
     if not path.exists():
-        return set()
+        return set(), set()
     keys: set[str] = set()
+    run_ids: set[str] = set()
     with path.open("r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):
             stripped = line.strip()
@@ -329,7 +351,19 @@ def existing_import_keys(path: Path) -> set[str]:
             key = import_key(record)
             if key:
                 keys.add(key)
-    return keys
+            run_id = ledger_run_id(record)
+            if run_id is not None:
+                if run_id in run_ids:
+                    raise CliError(f"duplicate run_id in ledger at {path}:{line_no}: {run_id}")
+                run_ids.add(run_id)
+    return keys, run_ids
+
+
+def find_ledger_run_record(data_dir: Path, run_id: str) -> dict[str, Any] | None:
+    for record in read_ledger(data_dir):
+        if ledger_run_id(record) == run_id:
+            return record
+    return None
 
 
 def ledger_record_error(path: Path, line_no: int, message: str) -> CliError:
@@ -562,6 +596,7 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     records: list[dict[str, Any]] = []
+    seen_run_ids: set[str] = set()
     with path.open("r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):
             stripped = line.strip()
@@ -572,6 +607,11 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise CliError(f"invalid ledger JSON at {path}:{line_no}: {exc}") from exc
             validate_ledger_record(record, path, line_no)
+            run_id = ledger_run_id(record)
+            if run_id is not None:
+                if run_id in seen_run_ids:
+                    raise CliError(f"duplicate run_id in ledger at {path}:{line_no}: {run_id}")
+                seen_run_ids.add(run_id)
             records.append(record)
     return records
 
@@ -776,6 +816,23 @@ def command_finish(args: argparse.Namespace) -> int:
         run = load_run_state(run_path, run_id)
         if run.get("status") == "completed":
             raise CliError(f"run is already completed: {args.run_id}")
+        existing_record = find_ledger_run_record(data_dir, run_id)
+        if existing_record is not None:
+            run["status"] = "completed"
+            run["finished_at"] = existing_record["finished_at"]
+            run["record_id"] = existing_record["record_id"]
+            atomic_write_json(run_path, run)
+            print(
+                json.dumps(
+                    {
+                        "appended": 0,
+                        "record_id": existing_record["record_id"],
+                        "ledger": str(ledger_path(data_dir)),
+                    },
+                    indent=2,
+                )
+            )
+            return 0
 
         started_at = parse_time(run.get("started_at"))
         finished_at = parse_time(args.finished_at, default=now_utc())

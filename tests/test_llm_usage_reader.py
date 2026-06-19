@@ -127,6 +127,33 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertFalse((root / "escape.json").exists())
             self.assertFalse((data_dir / "escape.json").exists())
 
+    def test_record_rejects_duplicate_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            run_id = "run_duplicate_record"
+            args = [
+                "record",
+                "--run-id",
+                run_id,
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            ]
+
+            self.assertEqual(self.run_cli(data_dir, *args), 0)
+            self.assertEqual(self.run_cli(data_dir, *args), 2)
+
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["run_id"], run_id)
+
     def test_record_rejects_non_finite_manual_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -482,6 +509,37 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(tool.CliError, "status"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_duplicate_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            run_id = "run_duplicate_ledger"
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--run-id",
+                run_id,
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            duplicate = dict(record)
+            duplicate["record_id"] = "rec_duplicate000000"
+            tool.refresh_record_hash(duplicate)
+            ledger.write_text(json.dumps(record) + "\n" + json.dumps(duplicate) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "duplicate run_id"):
                 tool.read_ledger(data_dir)
 
     def test_read_ledger_rejects_hash_valid_malformed_usage_object(self) -> None:
@@ -1415,6 +1473,73 @@ class LlmUsageReaderTests(unittest.TestCase):
             run_state = json.loads((data_dir / "runs" / f"{run_id}.json").read_text(encoding="utf-8"))
             self.assertEqual(run_state["status"], "completed")
             self.assertEqual(run_state["record_id"], records[0]["record_id"])
+
+    def test_finish_repairs_stale_run_state_without_duplicate_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_retry_after_crash"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                ),
+                0,
+            )
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "finish",
+                    "--run-id",
+                    run_id,
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "10",
+                    "--output-tokens",
+                    "5",
+                ),
+                0,
+            )
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            first_record_id = records[0]["record_id"]
+            run_path = data_dir / "runs" / f"{run_id}.json"
+            stale_state = json.loads(run_path.read_text(encoding="utf-8"))
+            stale_state["status"] = "running"
+            stale_state.pop("finished_at", None)
+            stale_state.pop("record_id", None)
+            run_path.write_text(json.dumps(stale_state) + "\n", encoding="utf-8")
+
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "finish",
+                    "--run-id",
+                    run_id,
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "10",
+                    "--output-tokens",
+                    "5",
+                ),
+                0,
+            )
+
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["record_id"], first_record_id)
+            repaired_state = json.loads(run_path.read_text(encoding="utf-8"))
+            self.assertEqual(repaired_state["status"], "completed")
+            self.assertEqual(repaired_state["record_id"], first_record_id)
 
     def test_finish_rejects_non_object_run_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

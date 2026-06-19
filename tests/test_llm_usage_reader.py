@@ -2805,6 +2805,52 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["usage"]["tokens_consumed"], 15)
 
+    def test_openai_usage_import_rejects_corrected_legacy_bucket_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            first = root / "usage-first.json"
+            corrected = root / "usage-corrected.json"
+
+            def payload(input_tokens: int) -> dict[str, object]:
+                return {
+                    "object": "page",
+                    "data": [
+                        {
+                            "object": "bucket",
+                            "start_time": 1781740800,
+                            "end_time": 1781827200,
+                            "results": [
+                                {
+                                    "object": "organization.usage.completions.result",
+                                    "input_tokens": input_tokens,
+                                    "output_tokens": 5,
+                                    "num_model_requests": 1,
+                                    "model": "gpt-5.4",
+                                }
+                            ],
+                        }
+                    ],
+                }
+
+            first.write_text(json.dumps(payload(10)), encoding="utf-8")
+            corrected.write_text(json.dumps(payload(11)), encoding="utf-8")
+            self.assertEqual(self.run_cli(data_dir, "import-openai-usage", "--file", str(first)), 0)
+
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            del record["source"]["result_identity"]
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+            self.assertNotIn("result_identity", tool.read_ledger(data_dir)[0]["source"])
+
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(corrected))
+
+            self.assertEqual(code, 2)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["usage"]["tokens_consumed"], 15)
+
     def test_openai_usage_import_rejects_malformed_numeric_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
@@ -4045,6 +4091,53 @@ class LlmUsageReaderTests(unittest.TestCase):
             corrected.write_text(json.dumps(payload(0.07)), encoding="utf-8")
 
             self.assertEqual(self.run_cli(data_dir, "import-openai-costs", "--file", str(first)), 0)
+            code = self.run_cli(data_dir, "import-openai-costs", "--file", str(corrected))
+
+            self.assertEqual(code, 2)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["billing"]["actual_cost_usd"], "0.06")
+
+    def test_openai_cost_import_rejects_corrected_legacy_bucket_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            first = root / "costs-first.json"
+            corrected = root / "costs-corrected.json"
+
+            def payload(amount: float) -> dict[str, object]:
+                return {
+                    "object": "page",
+                    "data": [
+                        {
+                            "object": "bucket",
+                            "start_time": 1781740800,
+                            "end_time": 1781827200,
+                            "results": [
+                                {
+                                    "object": "organization.costs.result",
+                                    "amount": {"value": amount, "currency": "usd"},
+                                    "line_item": "Completions",
+                                    "project_id": "proj_123",
+                                    "api_key_id": None,
+                                    "quantity": None,
+                                }
+                            ],
+                        }
+                    ],
+                }
+
+            first.write_text(json.dumps(payload(0.06)), encoding="utf-8")
+            corrected.write_text(json.dumps(payload(0.07)), encoding="utf-8")
+            self.assertEqual(self.run_cli(data_dir, "import-openai-costs", "--file", str(first)), 0)
+
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            del record["source"]["result_identity"]
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+            self.assertNotIn("result_identity", tool.read_ledger(data_dir)[0]["source"])
+
             code = self.run_cli(data_dir, "import-openai-costs", "--file", str(corrected))
 
             self.assertEqual(code, 2)

@@ -320,18 +320,26 @@ def atomic_write_json(path: Path, value: Any) -> None:
 
 
 def write_new_json(path: Path, value: Any) -> Path:
+    """Write JSON to a new path, publishing only complete staged content."""
     path.parent.mkdir(parents=True, exist_ok=True)
     content = json.dumps(value, indent=2, sort_keys=True) + "\n"
     candidate = path
     index = 1
     while True:
+        tmp = candidate.with_name(f".{candidate.name}.{uuid.uuid4().hex}.tmp")
         try:
-            with candidate.open("x", encoding="utf-8") as fh:
+            with tmp.open("x", encoding="utf-8") as fh:
                 fh.write(content)
+            os.link(tmp, candidate)
             return candidate
         except FileExistsError:
             candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
             index += 1
+        finally:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
 
 
 def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:

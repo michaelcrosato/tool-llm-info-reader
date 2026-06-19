@@ -3876,8 +3876,31 @@ class LlmUsageReaderTests(unittest.TestCase):
 
             self.assertEqual(len(set(paths)), 8)
             self.assertIn("openai-usage.json", {path.name for path in paths})
+            self.assertEqual([path for path in base.parent.iterdir() if path.name.endswith(".tmp")], [])
             stored_indexes = sorted(json.loads(path.read_text(encoding="utf-8"))["index"] for path in paths)
             self.assertEqual(stored_indexes, list(range(8)))
+
+    def test_write_new_json_cleans_temp_file_after_publish_race(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp) / "evidence" / "openai-usage.json"
+            staged_paths: list[Path] = []
+            real_link = os.link
+
+            def racing_link(src: Path, dst: Path) -> None:
+                staged_paths.append(src)
+                if dst == base and not base.exists():
+                    base.write_text(json.dumps({"index": "winner"}), encoding="utf-8")
+                    raise FileExistsError
+                real_link(src, dst)
+
+            with mock.patch.object(tool.os, "link", side_effect=racing_link):
+                path = tool.write_new_json(base, {"index": 1})
+
+            self.assertEqual(path.name, "openai-usage-1.json")
+            self.assertEqual(json.loads(base.read_text(encoding="utf-8"))["index"], "winner")
+            self.assertEqual(json.loads(path.read_text(encoding="utf-8"))["index"], 1)
+            self.assertTrue(staged_paths)
+            self.assertFalse(any(path.exists() for path in staged_paths))
 
     def test_openai_cost_import_rejects_malformed_amount(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

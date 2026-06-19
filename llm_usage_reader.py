@@ -1465,9 +1465,28 @@ def provider_import_key(
     )
 
 
+def validate_openai_page_complete(payload: dict[str, Any]) -> list[Any]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise CliError("expected an OpenAI page object with data[] or a raw bucket array")
+    has_more = payload.get("has_more")
+    next_page = payload.get("next_page")
+    if has_more is None:
+        if next_page is not None:
+            raise CliError("OpenAI page object has next_page without has_more")
+        return data
+    if not isinstance(has_more, bool):
+        raise CliError("OpenAI page object field 'has_more' must be boolean when present")
+    if has_more:
+        raise CliError("OpenAI page object is incomplete; fetch and import all pages before recording it")
+    if next_page is not None:
+        raise CliError("OpenAI page object has next_page when has_more is false")
+    return data
+
+
 def iter_openai_buckets(payload: Any) -> Iterable[dict[str, Any]]:
-    if isinstance(payload, dict) and payload.get("object") == "page" and isinstance(payload.get("data"), list):
-        yield from payload["data"]
+    if isinstance(payload, dict) and payload.get("object") == "page":
+        yield from validate_openai_page_complete(payload)
         return
     if isinstance(payload, list):
         yield from payload

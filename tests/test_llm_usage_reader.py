@@ -796,6 +796,33 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "model"):
                 tool.read_ledger(data_dir)
 
+    def test_read_ledger_rejects_hash_valid_malformed_record_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["record_id"] = " not-a-real-record-id "
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "record_id"):
+                tool.read_ledger(data_dir)
+
     def test_read_ledger_rejects_hash_valid_unknown_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -847,7 +874,7 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger = tool.ledger_path(data_dir)
             record = json.loads(ledger.read_text(encoding="utf-8"))
             duplicate = dict(record)
-            duplicate["record_id"] = "rec_duplicate000000"
+            duplicate["record_id"] = "rec_0000000000000000"
             tool.refresh_record_hash(duplicate)
             ledger.write_text(json.dumps(record) + "\n" + json.dumps(duplicate) + "\n", encoding="utf-8")
 
@@ -886,7 +913,7 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger = tool.ledger_path(data_dir)
             record = json.loads(ledger.read_text(encoding="utf-8"))
             duplicate = dict(record)
-            duplicate["record_id"] = "rec_duplicate000001"
+            duplicate["record_id"] = "rec_0000000000000001"
             tool.refresh_record_hash(duplicate)
             ledger.write_text(json.dumps(record) + "\n" + json.dumps(duplicate) + "\n", encoding="utf-8")
 

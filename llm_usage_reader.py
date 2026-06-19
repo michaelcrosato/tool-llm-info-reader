@@ -33,6 +33,7 @@ DEFAULT_LOCK = Path("usage-ledger.lock")
 UTC = dt.timezone.utc
 DURATION_TIMESTAMP_TOLERANCE_MS = 1000
 RUN_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+RECORD_ID_PATTERN = re.compile(r"^rec_[a-f0-9]{16}$")
 SHA256_PATTERN = re.compile(r"^[a-f0-9]{64}$")
 LEDGER_KINDS = {"provider_cost_bucket", "provider_usage_bucket", "run"}
 LEDGER_STATUSES = {"completed", "failed", "incomplete"}
@@ -546,7 +547,9 @@ def validate_ledger_schema_version(record: dict[str, Any], path: Path, line_no: 
 
 
 def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -> None:
-    validate_ledger_required_string_field(record, path, line_no, "record_id")
+    record_id = validate_ledger_required_string_field(record, path, line_no, "record_id")
+    if not RECORD_ID_PATTERN.fullmatch(record_id):
+        raise ledger_record_error(path, line_no, "field 'record_id' must be a valid record id")
     kind = validate_ledger_required_string_field(record, path, line_no, "kind")
     if kind not in LEDGER_KINDS:
         raise ledger_record_error(path, line_no, f"field 'kind' has unsupported value {kind!r}")

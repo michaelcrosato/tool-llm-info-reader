@@ -1408,7 +1408,7 @@ def command_finish(args: argparse.Namespace) -> int:
             usage=make_usage(args),
             billing=make_billing(args),
             source_type=args.source,
-            source_detail={"run_file": str(run_path)},
+            source_detail={"run_file": str(run_path.resolve())},
             status="completed" if exit_code in {None, 0} else "failed",
             run_id=run_id,
             exit_code=exit_code,

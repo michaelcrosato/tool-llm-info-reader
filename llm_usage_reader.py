@@ -599,6 +599,11 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
         if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
             raise ledger_record_error(path, line_no, "field 'run_id' must be null or a valid run id")
     validate_ledger_optional_nonnegative_int(record, path, line_no, "exit_code")
+    validate_ledger_time_field(record, path, line_no, "created_at")
+    validate_ledger_object_field(record, path, line_no, "host")
+    notes = record.get("notes")
+    if notes is not None and not isinstance(notes, str):
+        raise ledger_record_error(path, line_no, "field 'notes' must be a string or null")
 
 
 def validate_ledger_duration(

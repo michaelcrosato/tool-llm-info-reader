@@ -964,6 +964,7 @@ def command_finish(args: argparse.Namespace) -> int:
             model = normalize_cli_model(args.model)
         else:
             model = normalize_model(run.get("model"))
+        exit_code = positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None
         record = make_record(
             kind="run",
             provider=provider,
@@ -974,9 +975,9 @@ def command_finish(args: argparse.Namespace) -> int:
             billing=make_billing(args),
             source_type=args.source,
             source_detail={"run_file": str(run_path)},
-            status="completed",
+            status="completed" if exit_code in {None, 0} else "failed",
             run_id=run_id,
-            exit_code=positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None,
+            exit_code=exit_code,
             notes=args.notes or run.get("notes"),
         )
         append_ledger(data_dir, [record])

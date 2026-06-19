@@ -1475,8 +1475,9 @@ def command_wrap(args: argparse.Namespace) -> int:
         try:
             completed = subprocess.run(command, cwd=str(cwd) if cwd is not None else None)
             exit_code = completed.returncode
-        except FileNotFoundError as exc:
-            exit_code = 127
+        except OSError as exc:
+            command_not_found = isinstance(exc, FileNotFoundError)
+            exit_code = 127 if command_not_found else 126
             finished_at = now_utc()
             duration_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)
             record = make_record(
@@ -1504,7 +1505,8 @@ def command_wrap(args: argparse.Namespace) -> int:
                     indent=2,
                 )
             )
-            print(f"command not found: {command[0]}", file=sys.stderr)
+            message = "command not found" if command_not_found else "command failed to start"
+            print(f"{message}: {command[0]}", file=sys.stderr)
             return exit_code
 
         finished_at = now_utc()

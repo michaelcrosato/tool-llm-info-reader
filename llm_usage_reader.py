@@ -377,6 +377,7 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
         )
         pending_record_ids: set[str] = set()
         pending_run_ids: set[str] = set()
+        pending_import_keys: set[str] = set()
         pending_result_identities: dict[str, str] = {}
         pending_legacy_result_identities: dict[str, str] = {}
         for index, record in enumerate(pending, 1):
@@ -384,6 +385,10 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
             key = import_key(record)
             if key and key in seen_import_keys:
                 continue
+            if key:
+                if key in pending_import_keys:
+                    raise CliError(f"duplicate import_key in pending records: {key}")
+                pending_import_keys.add(key)
             stored_result_identity = stored_provider_result_identity(record)
             legacy_result_identity = legacy_provider_result_identity(record)
             result_identity = stored_result_identity or legacy_result_identity

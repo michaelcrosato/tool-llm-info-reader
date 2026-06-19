@@ -31,6 +31,8 @@ from typing import Any, Iterable, Iterator
 
 SCHEMA_VERSION = 1
 OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+OPENAI_USAGE_COMPLETIONS_OBJECT = "organization.usage.completions.result"
+OPENAI_COSTS_OBJECT = "organization.costs.result"
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_LEDGER = Path("usage-ledger.jsonl")
 DEFAULT_LOCK = Path("usage-ledger.lock")
@@ -994,19 +996,19 @@ def validate_provider_export_kind(record: dict[str, Any], source: dict[str, Any]
             "field 'provider' must be openai when source.type is provider_export",
         )
     if kind == "provider_usage_bucket":
-        if not isinstance(provider_object, str) or not provider_object.startswith("organization.usage."):
+        if provider_object != OPENAI_USAGE_COMPLETIONS_OBJECT:
             raise ledger_record_error(
                 path,
                 line_no,
-                "field 'source.provider_object' must be an organization.usage.* object for provider_usage_bucket",
+                f"field 'source.provider_object' must be {OPENAI_USAGE_COMPLETIONS_OBJECT} for provider_usage_bucket",
             )
         return
     if kind == "provider_cost_bucket":
-        if provider_object != "organization.costs.result":
+        if provider_object != OPENAI_COSTS_OBJECT:
             raise ledger_record_error(
                 path,
                 line_no,
-                "field 'source.provider_object' must be organization.costs.result for provider_cost_bucket",
+                f"field 'source.provider_object' must be {OPENAI_COSTS_OBJECT} for provider_cost_bucket",
             )
         return
     raise ledger_record_error(path, line_no, "field 'source.type' cannot be provider_export unless kind is a provider bucket")
@@ -1884,8 +1886,12 @@ def openai_result_object(result: dict[str, Any]) -> str:
     value = result.get("object")
     if not isinstance(value, str) or not value:
         raise CliError("OpenAI bucket result field 'object' must be a non-empty string")
-    if value.startswith("organization.usage.") or value == "organization.costs.result":
+    if value in {OPENAI_USAGE_COMPLETIONS_OBJECT, OPENAI_COSTS_OBJECT}:
         return value
+    if value.startswith("organization.usage."):
+        raise CliError(
+            f"unsupported OpenAI usage result object {value!r}; only {OPENAI_USAGE_COMPLETIONS_OBJECT!r} is supported"
+        )
     raise CliError(f"unsupported OpenAI bucket result object {value!r}")
 
 
@@ -1899,7 +1905,7 @@ def collect_openai_usage_rows(payload: Any) -> list[dict[str, Any]]:
             if not isinstance(result, dict):
                 raise CliError("OpenAI usage result must be an object")
             object_name = openai_result_object(result)
-            if not object_name.startswith("organization.usage."):
+            if object_name != OPENAI_USAGE_COMPLETIONS_OBJECT:
                 saw_cost_result = True
                 continue
             usage = normalize_openai_usage_result(result)
@@ -1983,7 +1989,7 @@ def collect_openai_cost_rows(payload: Any) -> list[dict[str, Any]]:
             if not isinstance(result, dict):
                 raise CliError("OpenAI cost result must be an object")
             object_name = openai_result_object(result)
-            if object_name != "organization.costs.result":
+            if object_name != OPENAI_COSTS_OBJECT:
                 saw_usage_result = True
                 continue
             cost, currency = strict_openai_cost_amount(result)
@@ -2033,7 +2039,7 @@ def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, A
                 source_type="provider_export",
                 source_detail={
                     **detail,
-                    "provider_object": "organization.costs.result",
+                    "provider_object": OPENAI_COSTS_OBJECT,
                     "import_key": provider_import_key(
                         "openai",
                         "provider_cost_bucket",
@@ -2456,8 +2462,8 @@ def classify_provider_export(payload: Any) -> str | None:
             if not isinstance(result, dict):
                 raise CliError("OpenAI bucket result must be an object")
             obj = openai_result_object(result)
-            saw_usage = saw_usage or obj.startswith("organization.usage.")
-            saw_cost = saw_cost or obj == "organization.costs.result"
+            saw_usage = saw_usage or obj == OPENAI_USAGE_COMPLETIONS_OBJECT
+            saw_cost = saw_cost or obj == OPENAI_COSTS_OBJECT
     if saw_usage and not saw_cost:
         return "openai_usage"
     if saw_cost and not saw_usage:
@@ -2585,7 +2591,10 @@ def build_parser() -> argparse.ArgumentParser:
     wrap.add_argument("command", nargs=argparse.REMAINDER, help="Command to run after --")
     wrap.set_defaults(func=command_wrap)
 
-    imp_usage = sub.add_parser("import-openai-usage", help="Import an OpenAI organization usage JSON response/export")
+    imp_usage = sub.add_parser(
+        "import-openai-usage",
+        help="Import an OpenAI organization completions usage JSON response/export",
+    )
     imp_usage.add_argument("--file", required=True, type=Path)
     imp_usage.add_argument("--default-model", help="Model name to use when the export was not grouped by model")
     imp_usage.add_argument("--notes", help="Free-form note")

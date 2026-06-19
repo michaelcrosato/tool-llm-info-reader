@@ -851,6 +851,14 @@ def validate_ledger_usage(usage: dict[str, Any], path: Path, line_no: int) -> No
             line_no,
             "field 'usage.tokens_consumed' must equal the sum of input/output/audio token fields",
         )
+    input_tokens = usage.get("input_tokens")
+    cached_input_tokens = usage.get("cached_input_tokens")
+    if input_tokens is not None and cached_input_tokens is not None and cached_input_tokens > input_tokens:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'usage.cached_input_tokens' cannot exceed usage.input_tokens",
+        )
 
 
 def usage_unavailable_reason(usage: dict[str, Any]) -> str | None:

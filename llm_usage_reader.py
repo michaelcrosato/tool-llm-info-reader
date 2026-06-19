@@ -1970,29 +1970,34 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
         raise CliError(f"environment variable {args.api_key_env} is not set")
 
     save_dir = args.save_dir or (args.data_dir / "openai-exports")
+    payloads: dict[str, Any] = {}
     records: list[dict[str, Any]] = []
     exports: dict[str, str] = {}
 
     if args.kind in {"usage", "both"}:
         group_by = ["model"] if args.group_by_model else None
-        usage_payload = fetch_openai_admin_pages(
+        payloads["usage"] = fetch_openai_admin_pages(
             args.base_url,
             "/organization/usage/completions",
             openai_fetch_params(start, end, args.bucket_width, group_by),
             api_key,
         )
-        usage_path = write_new_json(openai_export_path(save_dir, "usage", start, end), usage_payload)
-        records.extend(build_openai_usage_records(usage_path, args.default_model, args.notes))
-        exports["usage_export"] = str(usage_path)
 
     if args.kind in {"costs", "both"}:
-        costs_payload = fetch_openai_admin_pages(
+        payloads["costs"] = fetch_openai_admin_pages(
             args.base_url,
             "/organization/costs",
             openai_fetch_params(start, end, args.bucket_width, ["line_item"]),
             api_key,
         )
-        costs_path = write_new_json(openai_export_path(save_dir, "costs", start, end), costs_payload)
+
+    if "usage" in payloads:
+        usage_path = write_new_json(openai_export_path(save_dir, "usage", start, end), payloads["usage"])
+        records.extend(build_openai_usage_records(usage_path, args.default_model, args.notes))
+        exports["usage_export"] = str(usage_path)
+
+    if "costs" in payloads:
+        costs_path = write_new_json(openai_export_path(save_dir, "costs", start, end), payloads["costs"])
         records.extend(build_openai_cost_records(costs_path, args.notes))
         exports["costs_export"] = str(costs_path)
 

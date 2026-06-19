@@ -4982,6 +4982,58 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[1]["billing"]["quantity"], 15)
             self.assertEqual(len(list((data_dir / "openai-exports").glob("openai-*.json"))), 2)
 
+    def test_fetch_openai_defers_export_writes_until_all_requested_fetches_succeed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            calls = []
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                calls.append(endpoint)
+                if endpoint == "/organization/usage/completions":
+                    return {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 10,
+                                        "output_tokens": 5,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-5.4",
+                                    }
+                                ],
+                            }
+                        ],
+                        "has_more": False,
+                        "next_page": None,
+                    }
+                if endpoint == "/organization/costs":
+                    raise tool.CliError("costs unavailable")
+                raise AssertionError(f"unexpected endpoint {endpoint}")
+
+            with mock.patch.dict(os.environ, {"OPENAI_ADMIN_KEY": "sk-admin-test"}), mock.patch.object(
+                tool,
+                "openai_admin_get_json",
+                side_effect=fake_get_json,
+            ):
+                code = self.run_cli(
+                    data_dir,
+                    "fetch-openai",
+                    "--from",
+                    "2026-06-18",
+                    "--to",
+                    "2026-06-19",
+                )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(calls, ["/organization/usage/completions", "/organization/costs"])
+            self.assertFalse((data_dir / "openai-exports").exists())
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_fetch_openai_rejects_repeated_next_page(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

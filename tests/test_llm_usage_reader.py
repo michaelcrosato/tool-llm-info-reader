@@ -4042,7 +4042,64 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[0]["status"], "failed")
             self.assertEqual(records[0]["exit_code"], 1)
             run_state = json.loads((data_dir / "runs" / f"{run_id}.json").read_text(encoding="utf-8"))
-            self.assertEqual(run_state["status"], "completed")
+            self.assertEqual(run_state["status"], "failed")
+
+    def test_finish_is_idempotent_after_failed_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_retry_failed"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                ),
+                0,
+            )
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "finish",
+                    "--run-id",
+                    run_id,
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--exit-code",
+                    "1",
+                ),
+                0,
+            )
+
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            first_record_id = records[0]["record_id"]
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "finish",
+                    "--run-id",
+                    run_id,
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--exit-code",
+                    "1",
+                ),
+                0,
+            )
+
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["record_id"], first_record_id)
+            run_state = json.loads((data_dir / "runs" / f"{run_id}.json").read_text(encoding="utf-8"))
+            self.assertEqual(run_state["status"], "failed")
+            self.assertEqual(run_state["record_id"], first_record_id)
 
     def test_start_rejects_empty_model(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

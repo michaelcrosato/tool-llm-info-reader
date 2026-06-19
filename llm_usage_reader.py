@@ -308,8 +308,8 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
         )
     if run.get("run_id") != run_id:
         raise CliError(f"invalid run state at {path}: run_id mismatch")
-    if run.get("status") not in {"running", "completed"}:
-        raise CliError(f"invalid run state at {path}: status must be running or completed")
+    if run.get("status") not in {"running", "completed", "failed"}:
+        raise CliError(f"invalid run state at {path}: status must be running, completed, or failed")
     provider = run.get("provider")
     if not isinstance(provider, str) or not provider.strip():
         raise CliError(f"invalid run state at {path}: field 'provider' must be a non-empty string")
@@ -1355,7 +1355,7 @@ def command_finish(args: argparse.Namespace) -> int:
         run = load_run_state(run_path, run_id)
         existing_record = find_ledger_run_record(data_dir, run_id)
         if existing_record is not None:
-            run["status"] = "completed"
+            run["status"] = existing_record["status"]
             run["finished_at"] = existing_record["finished_at"]
             run["record_id"] = existing_record["record_id"]
             atomic_write_json(run_path, run)
@@ -1370,8 +1370,8 @@ def command_finish(args: argparse.Namespace) -> int:
                 )
             )
             return 0
-        if run.get("status") == "completed":
-            raise CliError(f"run is already completed but no ledger record exists: {args.run_id}")
+        if run.get("status") != "running":
+            raise CliError(f"run is already finalized but no ledger record exists: {args.run_id}")
 
         started_at = parse_time(run.get("started_at"))
         finished_at = parse_time(args.finished_at, default=now_utc())
@@ -1403,7 +1403,7 @@ def command_finish(args: argparse.Namespace) -> int:
             notes=args.notes or run.get("notes"),
         )
         append_ledger(data_dir, [record])
-        run["status"] = "completed"
+        run["status"] = record["status"]
         run["finished_at"] = record["finished_at"]
         run["record_id"] = record["record_id"]
         atomic_write_json(run_path, run)

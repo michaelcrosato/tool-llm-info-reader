@@ -7317,5 +7317,17 @@ class LlmUsageReaderTests(unittest.TestCase):
                 self.assertEqual(record["record_hash"], tool.record_hash(record))
 
 
+    def test_version_flag_reports_version(self) -> None:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as ctx:
+            tool.main(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn(tool.__version__, buffer.getvalue())
+
+    def test_version_attribute_is_nonempty_string(self) -> None:
+        self.assertIsInstance(tool.__version__, str)
+        self.assertTrue(tool.__version__.strip())
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -20,12 +20,31 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 
 Actual per-period billing is only as good as the source. For OpenAI, use the organization Usage and Costs API/dashboard export JSON as the evidence source. Token totals and actual billing are stored separately because cached tokens, service tiers, subscriptions, and credits can make "tokens consumed" different from "actual charged cost".
 
+## Install
+
+The tool is a single dependency-free module, so you can run it directly from a checkout:
+
+```powershell
+python .\llm_usage_reader.py --help
+```
+
+Or install it to get the `llm-usage-reader` console command on your PATH:
+
+```powershell
+pip install .
+llm-usage-reader --help
+llm-usage-reader --version
+```
+
+Installing requires Python 3.10 or newer. The examples below use `python .\llm_usage_reader.py`; once installed, `llm-usage-reader` is equivalent.
+
 ## Quick Start
 
 Show help:
 
 ```powershell
 python .\llm_usage_reader.py --help
+python .\llm_usage_reader.py --version
 ```
 
 Record one manual run:

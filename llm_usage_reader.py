@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 
+__version__ = "0.1.0"
 SCHEMA_VERSION = 1
 OPENAI_API_BASE_URL = "https://api.openai.com/v1"
 OPENAI_USAGE_COMPLETIONS_OBJECT = "organization.usage.completions.result"
@@ -2699,6 +2700,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Record, import, and summarize LLM token usage and cost evidence.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--data-dir",
         type=Path,

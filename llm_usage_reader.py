@@ -74,6 +74,16 @@ USAGE_VALUE_FIELDS = [
     "requests",
     "tokens_consumed",
 ]
+HOST_STRING_FIELDS = (
+    "hostname",
+    "os",
+    "os_release",
+    "os_version",
+    "machine",
+    "processor",
+    "python",
+    "executable",
+)
 
 
 class CliError(Exception):
@@ -564,6 +574,12 @@ def validate_ledger_usage(usage: dict[str, Any], path: Path, line_no: int) -> No
         )
 
 
+def validate_ledger_host(host: dict[str, Any], path: Path, line_no: int) -> None:
+    for field in HOST_STRING_FIELDS:
+        if not isinstance(host.get(field), str):
+            raise ledger_record_error(path, line_no, f"field 'host.{field}' must be a string")
+
+
 def validate_ledger_schema_version(record: dict[str, Any], path: Path, line_no: int) -> None:
     schema_version = record.get("schema_version")
     if isinstance(schema_version, bool) or not isinstance(schema_version, int):
@@ -600,7 +616,8 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
             raise ledger_record_error(path, line_no, "field 'run_id' must be null or a valid run id")
     validate_ledger_optional_nonnegative_int(record, path, line_no, "exit_code")
     validate_ledger_time_field(record, path, line_no, "created_at")
-    validate_ledger_object_field(record, path, line_no, "host")
+    host = validate_ledger_object_field(record, path, line_no, "host")
+    validate_ledger_host(host, path, line_no)
     notes = record.get("notes")
     if notes is not None and not isinstance(notes, str):
         raise ledger_record_error(path, line_no, "field 'notes' must be a string or null")

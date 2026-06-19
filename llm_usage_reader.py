@@ -688,7 +688,14 @@ def validate_ledger_duration(
 
 def validate_provider_export_kind(record: dict[str, Any], source: dict[str, Any], path: Path, line_no: int) -> None:
     kind = record["kind"]
+    provider = record["provider"]
     provider_object = source.get("provider_object")
+    if provider != "openai":
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'provider' must be openai when source.type is provider_export",
+        )
     if kind == "provider_usage_bucket":
         if not isinstance(provider_object, str) or not provider_object.startswith("organization.usage."):
             raise ledger_record_error(

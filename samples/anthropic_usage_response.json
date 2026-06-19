@@ -1,0 +1,27 @@
+{
+  "data": [
+    {
+      "starting_at": "2026-06-18T00:00:00Z",
+      "ending_at": "2026-06-19T00:00:00Z",
+      "results": [
+        {
+          "uncached_input_tokens": 1500,
+          "cache_read_input_tokens": 200,
+          "cache_creation": {
+            "ephemeral_1h_input_tokens": 1000,
+            "ephemeral_5m_input_tokens": 500
+          },
+          "output_tokens": 500,
+          "context_window": "0-200k",
+          "model": "claude-opus-4-6",
+          "service_tier": "standard",
+          "server_tool_use": {
+            "web_search_requests": 10
+          }
+        }
+      ]
+    }
+  ],
+  "has_more": false,
+  "next_page": null
+}

@@ -1962,14 +1962,16 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
     end = parse_time(args.to)
     if end <= start:
         raise CliError("--to must be after --from")
-    if not args.bucket_width.strip():
+    bucket_width = args.bucket_width.strip()
+    if not bucket_width:
         raise CliError("--bucket-width must be a non-empty string")
-    if not args.api_key_env.strip():
+    api_key_env = args.api_key_env.strip()
+    if not api_key_env:
         raise CliError("--api-key-env must be a non-empty environment variable name")
     default_model = normalize_cli_model(args.default_model)
-    api_key = os.environ.get(args.api_key_env)
+    api_key = os.environ.get(api_key_env)
     if not api_key:
-        raise CliError(f"environment variable {args.api_key_env} is not set")
+        raise CliError(f"environment variable {api_key_env} is not set")
 
     save_dir = args.save_dir or (args.data_dir / "openai-exports")
     payloads: dict[str, Any] = {}
@@ -1981,7 +1983,7 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
         payloads["usage"] = fetch_openai_admin_pages(
             args.base_url,
             "/organization/usage/completions",
-            openai_fetch_params(start, end, args.bucket_width, group_by),
+            openai_fetch_params(start, end, bucket_width, group_by),
             api_key,
         )
 
@@ -1989,7 +1991,7 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
         payloads["costs"] = fetch_openai_admin_pages(
             args.base_url,
             "/organization/costs",
-            openai_fetch_params(start, end, args.bucket_width, ["line_item"]),
+            openai_fetch_params(start, end, bucket_width, ["line_item"]),
             api_key,
         )
 

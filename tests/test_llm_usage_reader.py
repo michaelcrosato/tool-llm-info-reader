@@ -5015,6 +5015,45 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[1]["billing"]["quantity"], 15)
             self.assertEqual(len(list((data_dir / "openai-exports").glob("openai-*.json"))), 2)
 
+    def test_fetch_openai_strips_padded_fetch_options(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            calls = []
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                calls.append((endpoint, dict(params), api_key))
+                self.assertEqual(params["bucket_width"], "1d")
+                self.assertEqual(api_key, "sk-admin-test")
+                return {
+                    "object": "page",
+                    "data": [],
+                    "has_more": False,
+                    "next_page": None,
+                }
+
+            with mock.patch.dict(os.environ, {"OPENAI_ADMIN_KEY": "sk-admin-test"}), mock.patch.object(
+                tool,
+                "openai_admin_get_json",
+                side_effect=fake_get_json,
+            ):
+                code = self.run_cli(
+                    data_dir,
+                    "fetch-openai",
+                    "--from",
+                    "2026-06-18",
+                    "--to",
+                    "2026-06-19",
+                    "--kind",
+                    "usage",
+                    "--bucket-width",
+                    " 1d ",
+                    "--api-key-env",
+                    " OPENAI_ADMIN_KEY ",
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual([call[0] for call in calls], ["/organization/usage/completions"])
+
     def test_fetch_openai_defers_export_writes_until_all_requested_fetches_succeed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

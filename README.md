@@ -138,6 +138,8 @@ Run a 24/7-style local collector that imports any new JSON exports copied into `
 python .\llm_usage_reader.py watch --inbox .\data\inbox --interval 300
 ```
 
+The watcher recognizes OpenAI usage/cost exports and Anthropic Cost Report exports; unrecognized or not-yet-supported files (such as Anthropic usage reports) are left in place and skipped.
+
 ## Storage
 
 The default data directory is `data`.

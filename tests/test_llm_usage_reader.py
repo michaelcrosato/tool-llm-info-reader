@@ -7468,6 +7468,66 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(len(tool.read_ledger(data_dir)), 0)
 
+    def test_classify_anthropic_costs_export(self) -> None:
+        payload = self._anthropic_costs_payload("100", "50")
+        self.assertEqual(tool.classify_provider_export(payload), "anthropic_costs")
+
+    def test_classify_skips_anthropic_usage_shape(self) -> None:
+        usage_payload = {
+            "data": [
+                {
+                    "starting_at": "2026-06-18T00:00:00Z",
+                    "ending_at": "2026-06-19T00:00:00Z",
+                    "results": [
+                        {
+                            "uncached_input_tokens": 1500,
+                            "output_tokens": 500,
+                            "cache_read_input_tokens": 200,
+                            "model": "claude-opus-4-6",
+                        }
+                    ],
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+        self.assertIsNone(tool.classify_provider_export(usage_payload))
+
+    def test_classify_openai_costs_still_detected(self) -> None:
+        openai_payload = {
+            "object": "page",
+            "data": [
+                {
+                    "object": "bucket",
+                    "start_time": 1781740800,
+                    "end_time": 1781827200,
+                    "results": [
+                        {
+                            "object": "organization.costs.result",
+                            "amount": {"value": 0.06, "currency": "usd"},
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertEqual(tool.classify_provider_export(openai_payload), "openai_costs")
+
+    def test_watch_imports_anthropic_costs_from_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "anthropic-costs.json").write_text(
+                json.dumps(self._anthropic_costs_payload("123.78912", "45.5")), encoding="utf-8"
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+            self.assertEqual(tool.scan_inbox_once(args), 2)
+            self.assertEqual(tool.scan_inbox_once(args), 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 2)
+            self.assertTrue(all(r["provider"] == "anthropic" for r in records))
+
     def test_version_flag_reports_version(self) -> None:
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as ctx:

@@ -2688,6 +2688,44 @@ def save_imported_state(data_dir: Path, state: dict[str, Any]) -> None:
 
 
 def classify_provider_export(payload: Any) -> str | None:
+    openai_kind = classify_openai_export(payload)
+    if openai_kind is not None:
+        return openai_kind
+    return classify_anthropic_export(payload)
+
+
+def classify_anthropic_export(payload: Any) -> str | None:
+    if not isinstance(payload, dict) or payload.get("object") == "page":
+        return None
+    if not isinstance(payload.get("data"), list):
+        return None
+    try:
+        buckets = list(iter_anthropic_buckets(payload))
+    except CliError:
+        return None
+    saw_cost = False
+    saw_other = False
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        if not (isinstance(bucket.get("starting_at"), str) and isinstance(bucket.get("ending_at"), str)):
+            continue
+        results = bucket.get("results")
+        if not isinstance(results, list):
+            continue
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            if "amount" in result:
+                saw_cost = True
+            else:
+                saw_other = True
+    if saw_cost and not saw_other:
+        return "anthropic_costs"
+    return None
+
+
+def classify_openai_export(payload: Any) -> str | None:
     try:
         buckets = list(iter_openai_buckets(payload))
     except CliError:
@@ -2736,6 +2774,8 @@ def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) ->
         records.extend(build_openai_usage_records(path, None, notes))
     if kind in {"openai_costs", "mixed"}:
         records.extend(build_openai_cost_records(path, notes))
+    if kind == "anthropic_costs":
+        records.extend(build_anthropic_cost_records(path, notes))
     count = append_ledger(data_dir, records)
     return True, count
 

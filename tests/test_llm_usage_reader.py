@@ -2537,6 +2537,29 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[0]["status"], "completed")
             self.assertEqual(records[0]["record_hash"], tool.record_hash(records[0]))
 
+    def test_wrap_rejects_missing_cwd_without_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            missing_cwd = root / "missing"
+
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--provider",
+                "local",
+                "--model",
+                "test",
+                "--cwd",
+                str(missing_cwd),
+                "--",
+                sys.executable,
+                "--version",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_wrap_rejects_duplicate_run_id_before_running_command(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

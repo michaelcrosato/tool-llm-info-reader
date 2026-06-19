@@ -925,13 +925,16 @@ def command_wrap(args: argparse.Namespace) -> int:
         command = command[1:]
     if not command:
         raise CliError("wrap requires a command after --")
+    cwd = Path(args.cwd) if args.cwd else None
+    if cwd is not None and not cwd.is_dir():
+        raise CliError(f"--cwd must be an existing directory: {cwd}")
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
     if args.run_id and find_ledger_run_record(args.data_dir, run_id) is not None:
         raise CliError(f"duplicate run_id in ledger: {run_id}")
     started_at = now_utc()
     start_monotonic = time.perf_counter_ns()
     try:
-        completed = subprocess.run(command, cwd=args.cwd or None)
+        completed = subprocess.run(command, cwd=str(cwd) if cwd is not None else None)
         exit_code = completed.returncode
     except FileNotFoundError as exc:
         exit_code = 127

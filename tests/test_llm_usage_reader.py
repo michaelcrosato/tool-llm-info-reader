@@ -2271,6 +2271,42 @@ class LlmUsageReaderTests(unittest.TestCase):
             run_state = json.loads((data_dir / "runs" / f"{run_id}.json").read_text(encoding="utf-8"))
             self.assertEqual(run_state["status"], "running")
 
+    def test_finish_rejects_empty_model_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_empty_model_override"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                ),
+                0,
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                run_id,
+                "--model",
+                "",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+            run_state = json.loads((data_dir / "runs" / f"{run_id}.json").read_text(encoding="utf-8"))
+            self.assertEqual(run_state["status"], "running")
+
     def test_finish_rejects_mismatched_run_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

@@ -930,7 +930,12 @@ def command_finish(args: argparse.Namespace) -> int:
             provider = validate_provider(args.provider)
         else:
             provider = run["provider"]
-        model = normalize_model(args.model) or normalize_model(run.get("model"))
+        if args.model is not None:
+            model = normalize_model(args.model)
+            if model is None:
+                raise CliError("--model must be a non-empty string when provided")
+        else:
+            model = normalize_model(run.get("model"))
         record = make_record(
             kind="run",
             provider=provider,

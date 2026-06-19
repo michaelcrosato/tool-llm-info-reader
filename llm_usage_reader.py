@@ -325,9 +325,11 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
     if not isinstance(started_at, str) or not started_at:
         raise CliError(f"invalid run state at {path}: field 'started_at' must be a non-empty time string")
     try:
-        parse_time(started_at)
+        parsed_started_at = parse_time(started_at)
     except CliError as exc:
         raise CliError(f"invalid run state at {path}: field 'started_at' is invalid: {exc}") from exc
+    if started_at != to_iso(parsed_started_at):
+        raise CliError(f"invalid run state at {path}: field 'started_at' must be a canonical UTC time string")
     return run
 
 

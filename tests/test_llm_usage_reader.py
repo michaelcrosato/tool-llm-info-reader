@@ -1,9 +1,11 @@
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import llm_usage_reader as tool
 
@@ -3696,6 +3698,108 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "amount.value"):
                 tool.import_file_by_type(data_dir, sample)
 
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_fetch_openai_imports_admin_usage_and_costs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            calls = []
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                calls.append((base_url, endpoint, dict(params), api_key))
+                self.assertEqual(base_url, "https://api.openai.com/v1")
+                self.assertEqual(api_key, "sk-admin-test")
+                self.assertEqual(params["start_time"], 1781740800)
+                self.assertEqual(params["end_time"], 1781827200)
+                self.assertEqual(params["bucket_width"], "1d")
+                if endpoint == "/organization/usage/completions":
+                    self.assertEqual(params["group_by"], ["model"])
+                    return {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 10,
+                                        "output_tokens": 5,
+                                        "input_cached_tokens": 2,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-5.4",
+                                    }
+                                ],
+                            }
+                        ],
+                        "has_more": False,
+                        "next_page": None,
+                    }
+                if endpoint == "/organization/costs":
+                    self.assertEqual(params["group_by"], ["line_item"])
+                    return {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.costs.result",
+                                        "amount": {"value": 0.06, "currency": "usd"},
+                                        "line_item": "Completions",
+                                        "quantity": 15,
+                                    }
+                                ],
+                            }
+                        ],
+                        "has_more": False,
+                        "next_page": None,
+                    }
+                raise AssertionError(f"unexpected endpoint {endpoint}")
+
+            with mock.patch.dict(os.environ, {"OPENAI_ADMIN_KEY": "sk-admin-test"}), mock.patch.object(
+                tool,
+                "openai_admin_get_json",
+                side_effect=fake_get_json,
+            ):
+                code = self.run_cli(
+                    data_dir,
+                    "fetch-openai",
+                    "--from",
+                    "2026-06-18",
+                    "--to",
+                    "2026-06-19",
+                )
+
+            self.assertEqual(code, 0)
+            self.assertEqual([call[1] for call in calls], ["/organization/usage/completions", "/organization/costs"])
+            records = tool.read_ledger(data_dir)
+            self.assertEqual([record["kind"] for record in records], ["provider_usage_bucket", "provider_cost_bucket"])
+            self.assertEqual(records[0]["model"], "gpt-5.4")
+            self.assertEqual(records[0]["usage"]["tokens_consumed"], 15)
+            self.assertEqual(records[1]["billing"]["actual_cost_usd"], "0.06")
+            self.assertEqual(records[1]["billing"]["quantity"], 15)
+            self.assertEqual(len(list((data_dir / "openai-exports").glob("openai-*.json"))), 2)
+
+    def test_fetch_openai_requires_admin_key_before_side_effects(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(tool, "openai_admin_get_json") as get_json:
+                code = self.run_cli(
+                    data_dir,
+                    "fetch-openai",
+                    "--from",
+                    "2026-06-18",
+                    "--to",
+                    "2026-06-19",
+                )
+
+            self.assertEqual(code, 2)
+            get_json.assert_not_called()
+            self.assertFalse((data_dir / "openai-exports").exists())
             self.assertEqual(tool.read_ledger(data_dir), [])
 
     def test_openai_cost_import_rejects_malformed_amount(self) -> None:

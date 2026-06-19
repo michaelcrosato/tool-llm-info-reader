@@ -20,6 +20,9 @@ import re
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from decimal import Decimal, DecimalException, InvalidOperation
 from pathlib import Path
@@ -27,6 +30,7 @@ from typing import Any, Iterable, Iterator
 
 
 SCHEMA_VERSION = 1
+OPENAI_API_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_LEDGER = Path("usage-ledger.jsonl")
 DEFAULT_LOCK = Path("usage-ledger.lock")
@@ -1318,6 +1322,86 @@ def source_file_detail(path: Path) -> dict[str, Any]:
     }
 
 
+def epoch_seconds(value: dt.datetime) -> int:
+    return int(value.astimezone(UTC).timestamp())
+
+
+def openai_export_slug(value: dt.datetime) -> str:
+    return to_iso(value).replace("-", "").replace(":", "").replace("T", "-").replace("Z", "Z")
+
+
+def openai_export_path(save_dir: Path, kind: str, start: dt.datetime, end: dt.datetime) -> Path:
+    return save_dir / f"openai-{kind}-{openai_export_slug(start)}-{openai_export_slug(end)}.json"
+
+
+def openai_admin_url(base_url: str, endpoint: str, params: dict[str, Any]) -> str:
+    query = urllib.parse.urlencode(params, doseq=True)
+    return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}?{query}"
+
+
+def openai_admin_get_json(base_url: str, endpoint: str, params: dict[str, Any], api_key: str) -> Any:
+    request = urllib.request.Request(
+        openai_admin_url(base_url, endpoint, params),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:500]
+        raise CliError(f"OpenAI Admin API request failed with HTTP {exc.code}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise CliError(f"OpenAI Admin API request failed: {exc.reason}") from exc
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CliError("OpenAI Admin API returned invalid JSON") from exc
+
+
+def fetch_openai_admin_pages(
+    base_url: str,
+    endpoint: str,
+    params: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    page_params = dict(params)
+    buckets: list[Any] = []
+    while True:
+        payload = openai_admin_get_json(base_url, endpoint, page_params, api_key)
+        if not isinstance(payload, dict) or payload.get("object") != "page":
+            raise CliError(f"OpenAI Admin API endpoint {endpoint} returned an unexpected response")
+        data = payload.get("data")
+        if not isinstance(data, list):
+            raise CliError(f"OpenAI Admin API endpoint {endpoint} returned a page without data[]")
+        buckets.extend(data)
+        if not payload.get("has_more"):
+            return {"object": "page", "data": buckets, "has_more": False, "next_page": None}
+        next_page = payload.get("next_page")
+        if not isinstance(next_page, str) or not next_page:
+            raise CliError(f"OpenAI Admin API endpoint {endpoint} set has_more without next_page")
+        page_params["page"] = next_page
+
+
+def openai_fetch_params(
+    start: dt.datetime,
+    end: dt.datetime,
+    bucket_width: str,
+    group_by: list[str] | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "start_time": epoch_seconds(start),
+        "end_time": epoch_seconds(end),
+        "bucket_width": bucket_width,
+    }
+    if group_by:
+        params["group_by"] = group_by
+    return params
+
+
 def provider_import_key(
     provider: str,
     kind: str,
@@ -1486,6 +1570,64 @@ def command_import_openai_costs(args: argparse.Namespace) -> int:
     records = build_openai_cost_records(args.file, args.notes)
     count = append_ledger(args.data_dir, records)
     print(json.dumps({"appended": count, "ledger": str(ledger_path(args.data_dir))}, indent=2))
+    return 0
+
+
+def command_fetch_openai(args: argparse.Namespace) -> int:
+    start = parse_time(args.from_time)
+    end = parse_time(args.to)
+    if end <= start:
+        raise CliError("--to must be after --from")
+    if not args.bucket_width.strip():
+        raise CliError("--bucket-width must be a non-empty string")
+    if not args.api_key_env.strip():
+        raise CliError("--api-key-env must be a non-empty environment variable name")
+    api_key = os.environ.get(args.api_key_env)
+    if not api_key:
+        raise CliError(f"environment variable {args.api_key_env} is not set")
+
+    save_dir = args.save_dir or (args.data_dir / "openai-exports")
+    records: list[dict[str, Any]] = []
+    exports: dict[str, str] = {}
+
+    if args.kind in {"usage", "both"}:
+        group_by = ["model"] if args.group_by_model else None
+        usage_payload = fetch_openai_admin_pages(
+            args.base_url,
+            "/organization/usage/completions",
+            openai_fetch_params(start, end, args.bucket_width, group_by),
+            api_key,
+        )
+        usage_path = openai_export_path(save_dir, "usage", start, end)
+        atomic_write_json(usage_path, usage_payload)
+        records.extend(build_openai_usage_records(usage_path, args.default_model, args.notes))
+        exports["usage_export"] = str(usage_path)
+
+    if args.kind in {"costs", "both"}:
+        costs_payload = fetch_openai_admin_pages(
+            args.base_url,
+            "/organization/costs",
+            openai_fetch_params(start, end, args.bucket_width, ["line_item"]),
+            api_key,
+        )
+        costs_path = openai_export_path(save_dir, "costs", start, end)
+        atomic_write_json(costs_path, costs_payload)
+        records.extend(build_openai_cost_records(costs_path, args.notes))
+        exports["costs_export"] = str(costs_path)
+
+    count = append_ledger(args.data_dir, records)
+    print(
+        json.dumps(
+            {
+                "appended": count,
+                "fetched_records": len(records),
+                "ledger": str(ledger_path(args.data_dir)),
+                **exports,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
     return 0
 
 
@@ -1910,6 +2052,28 @@ def build_parser() -> argparse.ArgumentParser:
     imp_costs.add_argument("--file", required=True, type=Path)
     imp_costs.add_argument("--notes", help="Free-form note")
     imp_costs.set_defaults(func=command_import_openai_costs)
+
+    fetch_openai = sub.add_parser("fetch-openai", help="Fetch OpenAI Admin usage/costs for a period and import them")
+    fetch_openai.add_argument("--from", dest="from_time", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD")
+    fetch_openai.add_argument("--to", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD")
+    fetch_openai.add_argument("--kind", choices=["usage", "costs", "both"], default="both")
+    fetch_openai.add_argument("--bucket-width", default="1d", help="OpenAI usage bucket width, e.g. 1d")
+    fetch_openai.add_argument("--default-model", help="Model name to use when usage is not grouped by model")
+    fetch_openai.add_argument(
+        "--no-group-by-model",
+        dest="group_by_model",
+        action="store_false",
+        help="Fetch usage without group_by=model",
+    )
+    fetch_openai.add_argument(
+        "--api-key-env",
+        default="OPENAI_ADMIN_KEY",
+        help="Environment variable containing an OpenAI Admin API key",
+    )
+    fetch_openai.add_argument("--base-url", default=OPENAI_API_BASE_URL, help=argparse.SUPPRESS)
+    fetch_openai.add_argument("--save-dir", type=Path, help="Directory for saved raw OpenAI JSON responses")
+    fetch_openai.add_argument("--notes", help="Free-form note applied to imported records")
+    fetch_openai.set_defaults(func=command_fetch_openai, group_by_model=True)
 
     summary = sub.add_parser("summary", help="Summarize records over a time period")
     summary.add_argument("--from", dest="from_time", help="UTC ISO time, epoch seconds, YYYY-MM-DD, or now")

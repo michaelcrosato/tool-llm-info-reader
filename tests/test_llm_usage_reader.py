@@ -1334,6 +1334,54 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "source.duration_clock"):
                 tool.read_ledger(data_dir)
 
+    def test_read_ledger_rejects_local_recorder_without_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--provider",
+                "local",
+                "--model",
+                "test",
+                "--",
+                sys.executable,
+                "--version",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            del record["source"]["command"]
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "source.command"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_local_recorder_without_monotonic_clock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--provider",
+                "local",
+                "--model",
+                "test",
+                "--",
+                sys.executable,
+                "--version",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            del record["source"]["duration_clock"]
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "source.duration_clock"):
+                tool.read_ledger(data_dir)
+
     def test_read_ledger_rejects_hash_valid_inconsistent_tokens_consumed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -1588,7 +1636,11 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 0)
             ledger = tool.ledger_path(data_dir)
             record = json.loads(ledger.read_text(encoding="utf-8"))
-            record["source"] = {"type": "local_recorder", "duration_clock": "monotonic"}
+            record["source"] = {
+                "type": "local_recorder",
+                "command": [sys.executable, "--version"],
+                "duration_clock": "monotonic",
+            }
             tool.refresh_record_hash(record)
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 

@@ -481,15 +481,30 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
     if source_type not in SOURCE_TYPES:
         raise ledger_record_error(path, line_no, f"field 'source.type' has unsupported value {source_type!r}")
     duration_clock = source.get("duration_clock")
-    if duration_clock is not None:
-        if source_type != "local_recorder":
+    if source_type == "local_recorder":
+        if duration_clock != "monotonic":
             raise ledger_record_error(
                 path,
                 line_no,
-                "field 'source.duration_clock' can only be set when source.type is local_recorder",
+                "field 'source.duration_clock' must be monotonic for local_recorder",
             )
-        if duration_clock != "monotonic":
-            raise ledger_record_error(path, line_no, "field 'source.duration_clock' must be monotonic when present")
+        command = source.get("command")
+        if not isinstance(command, list) or not command:
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'source.command' must be a non-empty string array for local_recorder",
+            )
+        if not isinstance(command[0], str) or not command[0]:
+            raise ledger_record_error(path, line_no, "field 'source.command[0]' must be a non-empty string")
+        if any(not isinstance(part, str) for part in command):
+            raise ledger_record_error(path, line_no, "field 'source.command' must contain only strings")
+    elif duration_clock is not None:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'source.duration_clock' can only be set when source.type is local_recorder",
+        )
     if source_type == "provider_export":
         for field in PROVIDER_EXPORT_STRING_FIELDS:
             value = source.get(field)

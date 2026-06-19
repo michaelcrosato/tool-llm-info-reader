@@ -800,6 +800,12 @@ def validate_provider_export_payload(
             line_no,
             "field 'billing.source' cannot be provider billing for provider_usage_bucket",
         )
+    if kind == "provider_usage_bucket" and usage.get("tokens_consumed") is None and usage.get("requests") is None:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "provider_usage_bucket must include usage.tokens_consumed or usage.requests",
+        )
     if kind == "provider_cost_bucket" and usage_has_values(usage):
         raise ledger_record_error(
             path,

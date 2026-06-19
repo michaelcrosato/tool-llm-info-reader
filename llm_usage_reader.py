@@ -841,8 +841,6 @@ def command_finish(args: argparse.Namespace) -> int:
     with exclusive_file_lock(run_lock_path(data_dir, run_id)):
         run_path = data_dir / "runs" / f"{run_id}.json"
         run = load_run_state(run_path, run_id)
-        if run.get("status") == "completed":
-            raise CliError(f"run is already completed: {args.run_id}")
         existing_record = find_ledger_run_record(data_dir, run_id)
         if existing_record is not None:
             run["status"] = "completed"
@@ -860,6 +858,8 @@ def command_finish(args: argparse.Namespace) -> int:
                 )
             )
             return 0
+        if run.get("status") == "completed":
+            raise CliError(f"run is already completed but no ledger record exists: {args.run_id}")
 
         started_at = parse_time(run.get("started_at"))
         finished_at = parse_time(args.finished_at, default=now_utc())

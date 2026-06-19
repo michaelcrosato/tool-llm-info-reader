@@ -350,6 +350,8 @@ def existing_ledger_identities(path: Path) -> tuple[set[str], set[str]]:
             validate_ledger_record(record, path, line_no)
             key = import_key(record)
             if key:
+                if key in keys:
+                    raise CliError(f"duplicate import_key in ledger at {path}:{line_no}: {key}")
                 keys.add(key)
             run_id = ledger_run_id(record)
             if run_id is not None:
@@ -596,6 +598,7 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
     if not path.exists():
         return []
     records: list[dict[str, Any]] = []
+    seen_import_keys: set[str] = set()
     seen_run_ids: set[str] = set()
     with path.open("r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):
@@ -607,6 +610,11 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
             except json.JSONDecodeError as exc:
                 raise CliError(f"invalid ledger JSON at {path}:{line_no}: {exc}") from exc
             validate_ledger_record(record, path, line_no)
+            key = import_key(record)
+            if key:
+                if key in seen_import_keys:
+                    raise CliError(f"duplicate import_key in ledger at {path}:{line_no}: {key}")
+                seen_import_keys.add(key)
             run_id = ledger_run_id(record)
             if run_id is not None:
                 if run_id in seen_run_ids:

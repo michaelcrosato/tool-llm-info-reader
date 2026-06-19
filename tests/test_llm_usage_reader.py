@@ -3029,6 +3029,24 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(tool.load_imported_state(data_dir), {"files": {}})
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_watch_rejects_malformed_openai_page_envelope_instead_of_ignoring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "bad-page.json").write_text(
+                json.dumps({"object": "page", "data": {"not": "a list"}}),
+                encoding="utf-8",
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+
+            with self.assertRaisesRegex(tool.CliError, "OpenAI page object"):
+                tool.scan_inbox_once(args)
+
+            self.assertEqual(tool.load_imported_state(data_dir), {"files": {}})
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_watch_rejects_unknown_openai_result_instead_of_marking_empty(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

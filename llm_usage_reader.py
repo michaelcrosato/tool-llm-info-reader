@@ -733,6 +733,12 @@ def validate_ledger_source(source: dict[str, Any], path: Path, line_no: int) -> 
 
 def validate_provider_export_file_evidence(source: dict[str, Any], path: Path, line_no: int) -> None:
     source_file = Path(source["file"])
+    if not source_file.is_absolute():
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'source.file' must be an absolute evidence file path",
+        )
     try:
         if not source_file.is_file():
             raise ledger_record_error(

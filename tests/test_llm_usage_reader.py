@@ -6031,6 +6031,30 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertIn("denied", records[0]["notes"])
             self.assertEqual(records[0]["record_hash"], tool.record_hash(records[0]))
 
+    def test_wrap_records_signal_terminated_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            completed = subprocess.CompletedProcess(["signal-test"], -9)
+            with mock.patch.object(tool.subprocess, "run", return_value=completed):
+                code = self.run_cli(
+                    data_dir,
+                    "wrap",
+                    "--provider",
+                    "local",
+                    "--model",
+                    "test",
+                    "--",
+                    "signal-test",
+                )
+
+            self.assertEqual(code, 137)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["status"], "failed")
+            self.assertEqual(records[0]["exit_code"], 137)
+            self.assertIn("signal 9", records[0]["notes"])
+            self.assertEqual(records[0]["record_hash"], tool.record_hash(records[0]))
+
 
 if __name__ == "__main__":
     unittest.main()

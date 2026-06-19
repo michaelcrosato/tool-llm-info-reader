@@ -1212,6 +1212,10 @@ def sum_ints(*values: Any) -> int | None:
     return total if seen else None
 
 
+def normalize_process_returncode(returncode: int) -> int:
+    return 128 + abs(returncode) if returncode < 0 else returncode
+
+
 def new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex[:16]}"
 
@@ -1474,7 +1478,8 @@ def command_wrap(args: argparse.Namespace) -> int:
         start_monotonic = time.perf_counter_ns()
         try:
             completed = subprocess.run(command, cwd=str(cwd) if cwd is not None else None)
-            exit_code = completed.returncode
+            raw_returncode = completed.returncode
+            exit_code = normalize_process_returncode(raw_returncode)
         except OSError as exc:
             command_not_found = isinstance(exc, FileNotFoundError)
             exit_code = 127 if command_not_found else 126
@@ -1511,6 +1516,9 @@ def command_wrap(args: argparse.Namespace) -> int:
 
         finished_at = now_utc()
         duration_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)
+        notes = args.notes
+        if raw_returncode < 0 and notes is None:
+            notes = f"process terminated by signal {abs(raw_returncode)}"
         record = make_record(
             kind="run",
             provider=provider,
@@ -1524,7 +1532,7 @@ def command_wrap(args: argparse.Namespace) -> int:
             status="completed" if exit_code == 0 else "failed",
             run_id=run_id,
             exit_code=exit_code,
-            notes=args.notes,
+            notes=notes,
         )
         record["duration_ms"] = duration_ms
         record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"

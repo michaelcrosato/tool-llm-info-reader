@@ -1599,6 +1599,8 @@ def classify_provider_export(payload: Any) -> str | None:
     try:
         buckets = list(iter_openai_buckets(payload))
     except CliError:
+        if isinstance(payload, dict) and payload.get("object") == "page":
+            raise
         return None
     saw_openai_shape = (
         isinstance(payload, dict)

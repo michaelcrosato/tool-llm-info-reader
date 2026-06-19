@@ -643,6 +643,8 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
     if run_id is not None:
         if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
             raise ledger_record_error(path, line_no, "field 'run_id' must be null or a valid run id")
+        if kind != "run":
+            raise ledger_record_error(path, line_no, "field 'run_id' must be null unless kind is run")
     validate_ledger_optional_nonnegative_int(record, path, line_no, "exit_code")
     exit_code = record.get("exit_code")
     if status == "completed" and exit_code not in {None, 0}:

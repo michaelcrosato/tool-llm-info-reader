@@ -389,6 +389,28 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_rejects_failed_status_with_zero_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--status",
+                "failed",
+                "--exit-code",
+                "0",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_record_strips_provider_for_summary_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -935,6 +957,35 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger = tool.ledger_path(data_dir)
             record = json.loads(ledger.read_text(encoding="utf-8"))
             record["status"] = "completed"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "exit_code"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_failed_zero_exit_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--status",
+                "failed",
+                "--exit-code",
+                "1",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["exit_code"] = 0
             tool.refresh_record_hash(record)
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 

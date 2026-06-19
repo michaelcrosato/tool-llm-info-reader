@@ -99,6 +99,8 @@ The default data directory is `data`.
 - `data/inbox`: optional directory for continuously imported provider export files.
 - `data/openai-exports`: saved raw responses from `fetch-openai`; repeated fetches for the same period use suffixed filenames instead of overwriting prior evidence.
 
+Provider export records are verified against their recorded source file when the ledger is read. Keep imported JSON exports available, or use `fetch-openai` so the tool saves raw OpenAI evidence under `data/openai-exports`.
+
 Each ledger record includes:
 
 - `started_at`

@@ -2707,6 +2707,7 @@ class LlmUsageReaderTests(unittest.TestCase):
             records = tool.read_ledger(data_dir)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["source"]["type"], "provider_export")
+            self.assertIn("result_identity", records[0]["source"])
             self.assertEqual(records[0]["usage"]["tokens_consumed"], 15)
 
     def test_import_openai_usage_records_absolute_source_file(self) -> None:
@@ -2764,6 +2765,45 @@ class LlmUsageReaderTests(unittest.TestCase):
             source_file = Path(records[0]["source"]["file"])
             self.assertTrue(source_file.is_absolute())
             self.assertEqual(source_file, sample.resolve())
+
+    def test_openai_usage_import_rejects_corrected_bucket_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            first = root / "usage-first.json"
+            corrected = root / "usage-corrected.json"
+
+            def payload(input_tokens: int) -> dict[str, object]:
+                return {
+                    "object": "page",
+                    "data": [
+                        {
+                            "object": "bucket",
+                            "start_time": 1781740800,
+                            "end_time": 1781827200,
+                            "results": [
+                                {
+                                    "object": "organization.usage.completions.result",
+                                    "input_tokens": input_tokens,
+                                    "output_tokens": 5,
+                                    "num_model_requests": 1,
+                                    "model": "gpt-5.4",
+                                }
+                            ],
+                        }
+                    ],
+                }
+
+            first.write_text(json.dumps(payload(10)), encoding="utf-8")
+            corrected.write_text(json.dumps(payload(11)), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-openai-usage", "--file", str(first)), 0)
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(corrected))
+
+            self.assertEqual(code, 2)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["usage"]["tokens_consumed"], 15)
 
     def test_openai_usage_import_rejects_malformed_numeric_fields(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3970,6 +4010,47 @@ class LlmUsageReaderTests(unittest.TestCase):
             records = tool.read_ledger(data_dir)
             self.assertEqual(len(records), 1)
             self.assertIn("import_key", records[0]["source"])
+            self.assertIn("result_identity", records[0]["source"])
+
+    def test_openai_cost_import_rejects_corrected_bucket_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            first = root / "costs-first.json"
+            corrected = root / "costs-corrected.json"
+
+            def payload(amount: float) -> dict[str, object]:
+                return {
+                    "object": "page",
+                    "data": [
+                        {
+                            "object": "bucket",
+                            "start_time": 1781740800,
+                            "end_time": 1781827200,
+                            "results": [
+                                {
+                                    "object": "organization.costs.result",
+                                    "amount": {"value": amount, "currency": "usd"},
+                                    "line_item": "Completions",
+                                    "project_id": "proj_123",
+                                    "api_key_id": None,
+                                    "quantity": None,
+                                }
+                            ],
+                        }
+                    ],
+                }
+
+            first.write_text(json.dumps(payload(0.06)), encoding="utf-8")
+            corrected.write_text(json.dumps(payload(0.07)), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-openai-costs", "--file", str(first)), 0)
+            code = self.run_cli(data_dir, "import-openai-costs", "--file", str(corrected))
+
+            self.assertEqual(code, 2)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["billing"]["actual_cost_usd"], "0.06")
 
     def test_mixed_openai_import_appends_usage_and_costs_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4250,7 +4331,7 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertFalse((data_dir / "openai-exports").exists())
             self.assertEqual(tool.read_ledger(data_dir), [])
 
-    def test_fetch_openai_does_not_overwrite_existing_raw_exports(self) -> None:
+    def test_fetch_openai_rejects_corrected_bucket_without_overwriting_raw_exports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
             input_tokens = [10, 20]
@@ -4284,32 +4365,28 @@ class LlmUsageReaderTests(unittest.TestCase):
                 "openai_admin_get_json",
                 side_effect=fake_get_json,
             ):
-                for _ in range(2):
-                    self.assertEqual(
-                        self.run_cli(
-                            data_dir,
-                            "fetch-openai",
-                            "--from",
-                            "2026-06-18",
-                            "--to",
-                            "2026-06-19",
-                            "--kind",
-                            "usage",
-                        ),
-                        0,
-                    )
+                fetch_args = [
+                    "fetch-openai",
+                    "--from",
+                    "2026-06-18",
+                    "--to",
+                    "2026-06-19",
+                    "--kind",
+                    "usage",
+                ]
+                self.assertEqual(self.run_cli(data_dir, *fetch_args), 0)
+                self.assertEqual(self.run_cli(data_dir, *fetch_args), 2)
 
             records = tool.read_ledger(data_dir)
-            self.assertEqual(len(records), 2)
+            self.assertEqual(len(records), 1)
             first_path = Path(records[0]["source"]["file"])
-            second_path = Path(records[1]["source"]["file"])
+            second_path = data_dir / "openai-exports" / "openai-usage-20260618-000000Z-20260619-000000Z-1.json"
             self.assertNotEqual(first_path, second_path)
             self.assertTrue(first_path.exists())
             self.assertTrue(second_path.exists())
             self.assertEqual(tool.file_sha256(first_path), records[0]["source"]["file_sha256"])
-            self.assertEqual(tool.file_sha256(second_path), records[1]["source"]["file_sha256"])
             self.assertEqual(records[0]["usage"]["input_tokens"], 10)
-            self.assertEqual(records[1]["usage"]["input_tokens"], 20)
+            self.assertEqual(json.loads(second_path.read_text(encoding="utf-8"))["data"][0]["results"][0]["input_tokens"], 20)
 
     def test_atomic_write_json_uses_unique_temp_paths(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

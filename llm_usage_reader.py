@@ -1393,10 +1393,19 @@ def command_finish(args: argparse.Namespace) -> int:
         run = load_run_state(run_path, run_id)
         existing_record = find_ledger_run_record(data_dir, run_id)
         if existing_record is not None:
-            if run["status"] in {"completed", "failed"} and run["record_id"] != existing_record["record_id"]:
-                raise CliError(
-                    f"run state record_id does not match ledger record for run_id {run_id}: {run['record_id']}"
-                )
+            if run["status"] in {"completed", "failed"}:
+                if run["record_id"] != existing_record["record_id"]:
+                    raise CliError(
+                        f"run state record_id does not match ledger record for run_id {run_id}: {run['record_id']}"
+                    )
+                if run["status"] != existing_record["status"]:
+                    raise CliError(
+                        f"run state status does not match ledger record for run_id {run_id}: {run['status']}"
+                    )
+                if run["finished_at"] != existing_record["finished_at"]:
+                    raise CliError(
+                        f"run state finished_at does not match ledger record for run_id {run_id}: {run['finished_at']}"
+                    )
             run["status"] = existing_record["status"]
             run["finished_at"] = existing_record["finished_at"]
             run["record_id"] = existing_record["record_id"]

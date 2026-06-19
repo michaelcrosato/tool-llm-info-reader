@@ -4160,6 +4160,121 @@ class LlmUsageReaderTests(unittest.TestCase):
             unchanged_state = json.loads(run_path.read_text(encoding="utf-8"))
             self.assertEqual(unchanged_state["record_id"], "rec_0000000000000000")
 
+    def test_finish_rejects_final_run_state_status_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_mismatched_status"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                ),
+                0,
+            )
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "finish",
+                    "--run-id",
+                    run_id,
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "10",
+                    "--exit-code",
+                    "1",
+                ),
+                0,
+            )
+
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["status"], "failed")
+            run_path = data_dir / "runs" / f"{run_id}.json"
+            corrupt_state = json.loads(run_path.read_text(encoding="utf-8"))
+            corrupt_state["status"] = "completed"
+            run_path.write_text(json.dumps(corrupt_state) + "\n", encoding="utf-8")
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                run_id,
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "10",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), records)
+            unchanged_state = json.loads(run_path.read_text(encoding="utf-8"))
+            self.assertEqual(unchanged_state["status"], "completed")
+
+    def test_finish_rejects_final_run_state_finished_at_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_mismatched_finished"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                ),
+                0,
+            )
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "finish",
+                    "--run-id",
+                    run_id,
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "10",
+                ),
+                0,
+            )
+
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            run_path = data_dir / "runs" / f"{run_id}.json"
+            corrupt_state = json.loads(run_path.read_text(encoding="utf-8"))
+            corrupt_state["finished_at"] = "2026-06-18T20:02:00Z"
+            run_path.write_text(json.dumps(corrupt_state) + "\n", encoding="utf-8")
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                run_id,
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "10",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), records)
+            unchanged_state = json.loads(run_path.read_text(encoding="utf-8"))
+            self.assertEqual(unchanged_state["finished_at"], "2026-06-18T20:02:00Z")
+
     def test_finish_records_absolute_run_file_for_relative_data_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

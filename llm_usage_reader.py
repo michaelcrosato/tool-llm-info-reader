@@ -1181,7 +1181,7 @@ def provider_import_key(
 
 
 def iter_openai_buckets(payload: Any) -> Iterable[dict[str, Any]]:
-    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+    if isinstance(payload, dict) and payload.get("object") == "page" and isinstance(payload.get("data"), list):
         yield from payload["data"]
         return
     if isinstance(payload, list):

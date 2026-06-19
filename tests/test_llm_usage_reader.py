@@ -1876,6 +1876,37 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_openai_import_rejects_malformed_page_envelope(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.completions.result",
+                                        "input_tokens": 10,
+                                        "output_tokens": 5,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-5.4",
+                                    }
+                                ],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_openai_cost_import_rejects_usage_only_export(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

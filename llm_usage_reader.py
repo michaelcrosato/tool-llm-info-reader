@@ -686,6 +686,28 @@ def validate_ledger_duration(
         )
 
 
+def validate_provider_export_kind(record: dict[str, Any], source: dict[str, Any], path: Path, line_no: int) -> None:
+    kind = record["kind"]
+    provider_object = source.get("provider_object")
+    if kind == "provider_usage_bucket":
+        if not isinstance(provider_object, str) or not provider_object.startswith("organization.usage."):
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'source.provider_object' must be an organization.usage.* object for provider_usage_bucket",
+            )
+        return
+    if kind == "provider_cost_bucket":
+        if provider_object != "organization.costs.result":
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'source.provider_object' must be organization.costs.result for provider_cost_bucket",
+            )
+        return
+    raise ledger_record_error(path, line_no, "field 'source.type' cannot be provider_export unless kind is a provider bucket")
+
+
 def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     if not isinstance(record, dict):
         raise CliError(f"invalid ledger record at {path}:{line_no}: expected object")
@@ -707,6 +729,8 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     usage = validate_ledger_object_field(record, path, line_no, "usage")
     billing = validate_ledger_object_field(record, path, line_no, "billing")
     source_type = source["type"]
+    if source_type == "provider_export":
+        validate_provider_export_kind(record, source, path, line_no)
     validate_ledger_billing(billing, source_type, path, line_no)
     if source_type == "unavailable" and usage_has_values(usage):
         raise ledger_record_error(path, line_no, "usage values must be null when source.type is unavailable")

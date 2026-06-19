@@ -81,6 +81,15 @@ python .\llm_usage_reader.py summary --from 2026-06-18 --to 2026-06-19
 python .\llm_usage_reader.py summary --last 24h --json
 ```
 
+Verify the whole ledger and print a health summary:
+
+```powershell
+python .\llm_usage_reader.py verify
+python .\llm_usage_reader.py verify --json
+```
+
+`verify` reads every record through the same validation path as the other commands, so it re-checks each `record_hash` and re-verifies provider-export source files against their recorded hashes. It exits `0` when the ledger is intact and prints a summary (record counts by source type, kind, provider, and status; the covered period; and provider-export/manual/trusted counts). It exits non-zero with an `error:` message on the first integrity problem, so it can be used as a scripted or CI integrity gate.
+
 Summaries include only records fully contained in the requested period. Records that only partially overlap the period are skipped and reported separately, because their token and billing totals cannot be safely attributed to the smaller window.
 
 Run a 24/7-style local collector that imports any new JSON exports copied into `data/inbox`:

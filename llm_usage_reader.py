@@ -2540,6 +2540,87 @@ def command_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def summarize_ledger_health(records: list[dict[str, Any]], data_dir: Path) -> dict[str, Any]:
+    source_type_counts: dict[str, int] = {}
+    kind_counts: dict[str, int] = {}
+    provider_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    run_ids: set[str] = set()
+    provider_export_records = 0
+    manual_records = 0
+    trusted_records = 0
+    earliest: dt.datetime | None = None
+    latest: dt.datetime | None = None
+    for record in records:
+        source_type = str((record.get("source") or {}).get("type") or "unknown")
+        source_type_counts[source_type] = source_type_counts.get(source_type, 0) + 1
+        kind = str(record.get("kind") or "unknown")
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        provider = str(record.get("provider") or "unknown")
+        provider_counts[provider] = provider_counts.get(provider, 0) + 1
+        status = str(record.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if source_type == "provider_export":
+            provider_export_records += 1
+        if source_type in MANUAL_SOURCE_TYPES:
+            manual_records += 1
+        if source_type not in TRUSTED_EXCLUDED_SOURCE_TYPES:
+            trusted_records += 1
+        run_id = ledger_run_id(record)
+        if run_id is not None:
+            run_ids.add(run_id)
+        started_at = parse_time(record.get("started_at"))
+        finished_at = parse_time(record.get("finished_at"))
+        if earliest is None or started_at < earliest:
+            earliest = started_at
+        if latest is None or finished_at > latest:
+            latest = finished_at
+    return {
+        "ledger": str(ledger_path(data_dir)),
+        "records": len(records),
+        "earliest_started_at": to_iso(earliest) if earliest is not None else None,
+        "latest_finished_at": to_iso(latest) if latest is not None else None,
+        "source_type_counts": source_type_counts,
+        "kind_counts": kind_counts,
+        "provider_counts": provider_counts,
+        "status_counts": status_counts,
+        "provider_export_records": provider_export_records,
+        "manual_records": manual_records,
+        "trusted_records": trusted_records,
+        "distinct_run_ids": len(run_ids),
+    }
+
+
+def print_verify_report(report: dict[str, Any]) -> None:
+    print(f"Ledger: {report['ledger']}")
+    print(f"Status: OK ({report['records']} record(s) verified)")
+    if not report["records"]:
+        print("Ledger is empty.")
+        return
+    print(f"Period: {report['earliest_started_at']} to {report['latest_finished_at']}")
+    print(
+        "Records: "
+        f"provider_export={report['provider_export_records']} "
+        f"manual={report['manual_records']} "
+        f"trusted={report['trusted_records']} "
+        f"distinct_run_ids={report['distinct_run_ids']}"
+    )
+    print(f"By source type: {json.dumps(report['source_type_counts'], sort_keys=True)}")
+    print(f"By kind: {json.dumps(report['kind_counts'], sort_keys=True)}")
+    print(f"By provider: {json.dumps(report['provider_counts'], sort_keys=True)}")
+    print(f"By status: {json.dumps(report['status_counts'], sort_keys=True)}")
+
+
+def command_verify(args: argparse.Namespace) -> int:
+    records = read_ledger(args.data_dir)
+    report = summarize_ledger_health(records, args.data_dir)
+    if args.json:
+        print(json.dumps({"ok": True, **report}, indent=2, sort_keys=True))
+    else:
+        print_verify_report(report)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Record, import, and summarize LLM token usage and cost evidence.",
@@ -2647,6 +2728,10 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show", help="Print ledger records")
     show.add_argument("--limit", type=int, default=10)
     show.set_defaults(func=command_show)
+
+    verify = sub.add_parser("verify", help="Verify ledger integrity and print a health summary")
+    verify.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    verify.set_defaults(func=command_verify)
     return parser
 
 

@@ -1,4 +1,6 @@
 import concurrent.futures
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -6887,6 +6889,82 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[0]["exit_code"], 137)
             self.assertIn("signal 9", records[0]["notes"])
             self.assertEqual(records[0]["record_hash"], tool.record_hash(records[0]))
+
+
+    def _record_sample(self, data_dir: Path, started: str, finished: str) -> None:
+        self.assertEqual(
+            self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                started,
+                "--finished-at",
+                finished,
+                "--input-tokens",
+                "100",
+                "--output-tokens",
+                "25",
+            ),
+            0,
+        )
+
+    def test_verify_empty_ledger_is_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = self.run_cli(data_dir, "verify")
+            self.assertEqual(code, 0)
+            self.assertIn("0 record(s) verified", buffer.getvalue())
+            self.assertIn("Ledger is empty.", buffer.getvalue())
+
+    def test_verify_reports_health_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self._record_sample(data_dir, "2026-06-18T20:00:00Z", "2026-06-18T20:01:00Z")
+            self._record_sample(data_dir, "2026-06-18T21:00:00Z", "2026-06-18T21:02:00Z")
+
+            records = tool.read_ledger(data_dir)
+            report = tool.summarize_ledger_health(records, data_dir)
+            self.assertEqual(report["records"], 2)
+            self.assertEqual(sum(report["source_type_counts"].values()), 2)
+            self.assertEqual(report["source_type_counts"]["manual_attestation"], 2)
+            self.assertEqual(report["kind_counts"]["run"], 2)
+            self.assertEqual(report["provider_counts"]["openai"], 2)
+            self.assertEqual(report["manual_records"], 2)
+            self.assertEqual(report["trusted_records"], 0)
+            self.assertEqual(report["earliest_started_at"], "2026-06-18T20:00:00Z")
+            self.assertEqual(report["latest_finished_at"], "2026-06-18T21:02:00Z")
+            self.assertEqual(report["ledger"], str(tool.ledger_path(data_dir)))
+
+    def test_verify_json_output_is_machine_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self._record_sample(data_dir, "2026-06-18T20:00:00Z", "2026-06-18T20:01:00Z")
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = self.run_cli(data_dir, "verify", "--json")
+            self.assertEqual(code, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["records"], 1)
+            self.assertEqual(payload["manual_records"], 1)
+
+    def test_verify_rejects_tampered_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self._record_sample(data_dir, "2026-06-18T20:00:00Z", "2026-06-18T20:01:00Z")
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["usage"]["tokens_consumed"] = 999
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            code = self.run_cli(data_dir, "verify")
+            self.assertEqual(code, 2)
 
 
 if __name__ == "__main__":

@@ -1110,6 +1110,17 @@ def normalize_openai_usage_result(result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def strict_openai_model(result: dict[str, Any]) -> str | None:
+    if "model" not in result or result["model"] is None:
+        return None
+    model = result["model"]
+    if not isinstance(model, str) or not model.strip():
+        raise CliError("OpenAI usage field 'model' must be a non-empty string when present")
+    if model != model.strip():
+        raise CliError("OpenAI usage field 'model' must not have leading or trailing whitespace")
+    return model
+
+
 def source_file_detail(path: Path) -> dict[str, Any]:
     return {
         "file": str(path),
@@ -1194,7 +1205,7 @@ def build_openai_usage_records(path: Path, default_model: str | None, notes: str
                 make_record(
                     kind="provider_usage_bucket",
                     provider="openai",
-                    model=normalize_model(result.get("model")) or default_model,
+                    model=strict_openai_model(result) or default_model,
                     started_at=started_at,
                     finished_at=finished_at,
                     usage=usage,

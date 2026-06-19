@@ -686,6 +686,17 @@ def validate_ledger_duration(
         )
 
 
+def validate_ledger_kind_source(record: dict[str, Any], source: dict[str, Any], path: Path, line_no: int) -> None:
+    kind = record["kind"]
+    source_type = source["type"]
+    if kind in {"provider_usage_bucket", "provider_cost_bucket"} and source_type != "provider_export":
+        raise ledger_record_error(
+            path,
+            line_no,
+            f"field 'source.type' must be provider_export for {kind}",
+        )
+
+
 def validate_provider_export_kind(record: dict[str, Any], source: dict[str, Any], path: Path, line_no: int) -> None:
     kind = record["kind"]
     provider = record["provider"]
@@ -758,6 +769,7 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
     usage = validate_ledger_object_field(record, path, line_no, "usage")
     billing = validate_ledger_object_field(record, path, line_no, "billing")
     source_type = source["type"]
+    validate_ledger_kind_source(record, source, path, line_no)
     if source_type == "provider_export":
         validate_provider_export_kind(record, source, path, line_no)
     validate_ledger_billing(billing, source_type, path, line_no)

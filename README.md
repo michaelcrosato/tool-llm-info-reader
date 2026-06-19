@@ -9,6 +9,7 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 - Start time, finish time, duration, provider, model, exit code, and host details for local runs.
 - Imported OpenAI organization usage buckets, including model name when the export was grouped by model.
 - Imported OpenAI organization cost buckets.
+- Direct OpenAI Admin API usage/cost fetches for a requested period when `OPENAI_ADMIN_KEY` is available.
 - Idempotent OpenAI imports that skip previously imported bucket rows.
 - Fail-closed OpenAI imports for malformed or unsupported usage/cost export fields.
 - Manual token/cost entries, clearly marked as `manual_attestation`.
@@ -61,6 +62,15 @@ python .\llm_usage_reader.py import-openai-costs --file .\samples\openai_costs_r
 
 Use the matching import command for the export family; a cost-only export passed to `import-openai-usage`, or a usage-only export passed to `import-openai-costs`, is rejected rather than treated as an empty import.
 
+Fetch OpenAI organization usage and costs directly when an admin key is present:
+
+```powershell
+$env:OPENAI_ADMIN_KEY = "sk-admin-..."
+python .\llm_usage_reader.py fetch-openai --from 2026-06-18 --to 2026-06-19
+```
+
+`fetch-openai` saves the raw OpenAI responses under `data/openai-exports` and then imports those saved files through the same validation path as manual exports. Usage is grouped by model by default so period summaries include model names when OpenAI returns them.
+
 Summarize a period:
 
 ```powershell
@@ -111,4 +121,4 @@ Each ledger record includes:
 
 ## Current Boundary
 
-This version does not call the OpenAI API directly because no OpenAI Admin key is configured in this workspace. It imports JSON responses/exports instead. A live OpenAI collector can be added once a key with organization usage/cost permissions is approved.
+Direct OpenAI collection requires an admin key with organization usage/cost permissions in `OPENAI_ADMIN_KEY` or another environment variable named with `--api-key-env`. Without that key, use exported JSON files or the inbox watcher.

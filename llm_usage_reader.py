@@ -832,6 +832,8 @@ def command_start(args: argparse.Namespace) -> int:
         run_path = data_dir / "runs" / f"{run_id}.json"
         if run_path.exists():
             raise CliError(f"run already exists: {run_id}")
+        if find_ledger_run_record(data_dir, run_id) is not None:
+            raise CliError(f"duplicate run_id in ledger: {run_id}")
         started_at = parse_time(args.started_at, default=now_utc())
         run = {
             "schema_version": SCHEMA_VERSION,

@@ -61,6 +61,7 @@ python .\llm_usage_reader.py import-openai-costs --file .\samples\openai_costs_r
 ```
 
 Use the matching import command for the export family; a cost-only export passed to `import-openai-usage`, or a usage-only export passed to `import-openai-costs`, is rejected rather than treated as an empty import.
+Paginated OpenAI API pages must be complete before import. A page that still reports `has_more: true`, or a final page that still carries `next_page`, is rejected to avoid recording partial usage or cost evidence.
 
 Fetch OpenAI organization usage and costs directly when an admin key is present:
 

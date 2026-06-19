@@ -639,6 +639,8 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
     status = validate_ledger_required_string_field(record, path, line_no, "status")
     if status not in LEDGER_STATUSES:
         raise ledger_record_error(path, line_no, f"field 'status' has unsupported value {status!r}")
+    if kind != "run" and status != "completed":
+        raise ledger_record_error(path, line_no, "field 'status' must be completed unless kind is run")
     run_id = record.get("run_id")
     if run_id is not None:
         if not isinstance(run_id, str) or not RUN_ID_PATTERN.fullmatch(run_id):
@@ -647,6 +649,8 @@ def validate_ledger_metadata(record: dict[str, Any], path: Path, line_no: int) -
             raise ledger_record_error(path, line_no, "field 'run_id' must be null unless kind is run")
     validate_ledger_optional_nonnegative_int(record, path, line_no, "exit_code")
     exit_code = record.get("exit_code")
+    if kind != "run" and exit_code is not None:
+        raise ledger_record_error(path, line_no, "field 'exit_code' must be null unless kind is run")
     if status == "completed" and exit_code not in {None, 0}:
         raise ledger_record_error(path, line_no, "field 'status' cannot be completed when exit_code is nonzero")
     if status == "failed" and exit_code == 0:

@@ -372,16 +372,21 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
     path = ledger_path(data_dir)
     pending = list(records)
     with exclusive_file_lock(ledger_lock_path(data_dir)):
-        seen_import_keys, seen_run_ids, seen_record_ids, seen_result_identities = existing_ledger_identities(path)
+        seen_import_keys, seen_run_ids, seen_record_ids, seen_result_identities, seen_legacy_result_identities = (
+            existing_ledger_identities(path)
+        )
         pending_record_ids: set[str] = set()
         pending_run_ids: set[str] = set()
         pending_result_identities: dict[str, str] = {}
+        pending_legacy_result_identities: dict[str, str] = {}
         for index, record in enumerate(pending, 1):
             validate_ledger_record(record, path, index)
             key = import_key(record)
             if key and key in seen_import_keys:
                 continue
-            result_identity = provider_result_identity(record)
+            stored_result_identity = stored_provider_result_identity(record)
+            legacy_result_identity = legacy_provider_result_identity(record)
+            result_identity = stored_result_identity or legacy_result_identity
             if result_identity is not None:
                 identity_key = key or ""
                 seen_key = seen_result_identities.get(result_identity)
@@ -391,6 +396,18 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
                 if pending_key is not None and pending_key != identity_key:
                     raise CliError(f"conflicting provider result_identity in pending records: {result_identity}")
                 pending_result_identities[result_identity] = identity_key
+                if stored_result_identity is None and legacy_result_identity is not None:
+                    pending_legacy_result_identities[legacy_result_identity] = identity_key
+            if stored_result_identity is not None and legacy_result_identity is not None:
+                identity_key = key or ""
+                seen_legacy_key = seen_legacy_result_identities.get(legacy_result_identity)
+                if seen_legacy_key is not None and seen_legacy_key != identity_key:
+                    raise CliError(f"conflicting legacy provider result_identity in ledger: {legacy_result_identity}")
+                pending_legacy_key = pending_legacy_result_identities.get(legacy_result_identity)
+                if pending_legacy_key is not None and pending_legacy_key != identity_key:
+                    raise CliError(
+                        f"conflicting legacy provider result_identity in pending records: {legacy_result_identity}"
+                    )
             record_id = record["record_id"]
             if record_id in seen_record_ids or record_id in pending_record_ids:
                 raise CliError(f"duplicate record_id in ledger: {record_id}")
@@ -410,9 +427,13 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
                 seen_record_ids.add(record["record_id"])
                 if key:
                     seen_import_keys.add(key)
-                result_identity = provider_result_identity(record)
+                stored_result_identity = stored_provider_result_identity(record)
+                legacy_result_identity = legacy_provider_result_identity(record)
+                result_identity = stored_result_identity or legacy_result_identity
                 if result_identity is not None:
                     seen_result_identities[result_identity] = key or ""
+                    if stored_result_identity is None and legacy_result_identity is not None:
+                        seen_legacy_result_identities[legacy_result_identity] = key or ""
                 run_id = ledger_run_id(record)
                 if run_id is not None:
                     seen_run_ids.add(run_id)
@@ -435,7 +456,7 @@ def import_key(record: dict[str, Any]) -> str | None:
     return str(value) if value else None
 
 
-def provider_result_identity(record: dict[str, Any]) -> str | None:
+def stored_provider_result_identity(record: dict[str, Any]) -> str | None:
     source = record.get("source")
     if not isinstance(source, dict):
         return None
@@ -443,18 +464,63 @@ def provider_result_identity(record: dict[str, Any]) -> str | None:
     return str(value) if value else None
 
 
+def legacy_provider_result_identity(record: dict[str, Any]) -> str | None:
+    source = record.get("source")
+    if not isinstance(source, dict) or source.get("type") != "provider_export":
+        return None
+    provider = record.get("provider")
+    kind = record.get("kind")
+    started_at = record.get("started_at")
+    finished_at = record.get("finished_at")
+    provider_object = source.get("provider_object")
+    if (
+        not isinstance(provider, str)
+        or not isinstance(kind, str)
+        or not isinstance(started_at, str)
+        or not isinstance(finished_at, str)
+        or not isinstance(provider_object, str)
+    ):
+        return None
+    dimensions: dict[str, Any] = {"object": provider_object}
+    if kind == "provider_usage_bucket":
+        dimensions["model"] = record.get("model")
+    elif kind == "provider_cost_bucket":
+        billing = record.get("billing")
+        if not isinstance(billing, dict):
+            return None
+        dimensions.update(
+            {
+                "line_item": billing.get("line_item"),
+                "project_id": billing.get("project_id"),
+                "api_key_id": billing.get("api_key_id"),
+            }
+        )
+    else:
+        return None
+    return stable_json_hash(
+        {
+            "provider": provider,
+            "kind": kind,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "dimensions": dimensions,
+        }
+    )
+
+
 def existing_import_keys(path: Path) -> set[str]:
-    keys, _, _, _ = existing_ledger_identities(path)
+    keys, _, _, _, _ = existing_ledger_identities(path)
     return keys
 
 
-def existing_ledger_identities(path: Path) -> tuple[set[str], set[str], set[str], dict[str, str]]:
+def existing_ledger_identities(path: Path) -> tuple[set[str], set[str], set[str], dict[str, str], dict[str, str]]:
     if not path.exists():
-        return set(), set(), set(), {}
+        return set(), set(), set(), {}, {}
     keys: set[str] = set()
     run_ids: set[str] = set()
     record_ids: set[str] = set()
     result_identities: dict[str, str] = {}
+    legacy_result_identities: dict[str, str] = {}
     with path.open("r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):
             stripped = line.strip()
@@ -474,7 +540,9 @@ def existing_ledger_identities(path: Path) -> tuple[set[str], set[str], set[str]
                 if key in keys:
                     raise CliError(f"duplicate import_key in ledger at {path}:{line_no}: {key}")
                 keys.add(key)
-            result_identity = provider_result_identity(record)
+            stored_result_identity = stored_provider_result_identity(record)
+            legacy_result_identity = legacy_provider_result_identity(record)
+            result_identity = stored_result_identity or legacy_result_identity
             if result_identity is not None:
                 identity_key = key or ""
                 previous_key = result_identities.get(result_identity)
@@ -487,12 +555,14 @@ def existing_ledger_identities(path: Path) -> tuple[set[str], set[str], set[str]
                         f"conflicting provider result_identity in ledger at {path}:{line_no}: {result_identity}"
                     )
                 result_identities[result_identity] = identity_key
+                if stored_result_identity is None and legacy_result_identity is not None:
+                    legacy_result_identities[legacy_result_identity] = identity_key
             run_id = ledger_run_id(record)
             if run_id is not None:
                 if run_id in run_ids:
                     raise CliError(f"duplicate run_id in ledger at {path}:{line_no}: {run_id}")
                 run_ids.add(run_id)
-    return keys, run_ids, record_ids, result_identities
+    return keys, run_ids, record_ids, result_identities, legacy_result_identities
 
 
 def find_ledger_run_record(data_dir: Path, run_id: str) -> dict[str, Any] | None:
@@ -972,6 +1042,7 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
     seen_import_keys: set[str] = set()
     seen_run_ids: set[str] = set()
     seen_result_identities: dict[str, str] = {}
+    seen_legacy_result_identities: dict[str, str] = {}
     with path.open("r", encoding="utf-8") as fh:
         for line_no, line in enumerate(fh, 1):
             stripped = line.strip()
@@ -991,7 +1062,9 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
                 if key in seen_import_keys:
                     raise CliError(f"duplicate import_key in ledger at {path}:{line_no}: {key}")
                 seen_import_keys.add(key)
-            result_identity = provider_result_identity(record)
+            stored_result_identity = stored_provider_result_identity(record)
+            legacy_result_identity = legacy_provider_result_identity(record)
+            result_identity = stored_result_identity or legacy_result_identity
             if result_identity is not None:
                 identity_key = key or ""
                 previous_key = seen_result_identities.get(result_identity)
@@ -1004,6 +1077,16 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
                         f"conflicting provider result_identity in ledger at {path}:{line_no}: {result_identity}"
                     )
                 seen_result_identities[result_identity] = identity_key
+                if stored_result_identity is None and legacy_result_identity is not None:
+                    seen_legacy_result_identities[legacy_result_identity] = identity_key
+            if stored_result_identity is not None and legacy_result_identity is not None:
+                identity_key = key or ""
+                previous_key = seen_legacy_result_identities.get(legacy_result_identity)
+                if previous_key is not None and previous_key != identity_key:
+                    raise CliError(
+                        f"conflicting legacy provider result_identity in ledger at {path}:{line_no}: "
+                        f"{legacy_result_identity}"
+                    )
             run_id = ledger_run_id(record)
             if run_id is not None:
                 if run_id in seen_run_ids:

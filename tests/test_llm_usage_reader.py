@@ -672,6 +672,32 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_unavailable_source_includes_unavailable_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--source",
+                "unavailable",
+            )
+
+            self.assertEqual(code, 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(records[0]["source"]["type"], "unavailable")
+            self.assertEqual(
+                records[0]["usage"]["unavailable_reason"],
+                "usage telemetry source was explicitly marked unavailable",
+            )
+
     def test_record_rejects_out_of_range_epoch_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -1534,6 +1560,30 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(tool.CliError, "source.duration_clock"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_local_recorder_without_unavailable_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--provider",
+                "local",
+                "--model",
+                "test",
+                "--",
+                sys.executable,
+                "--version",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            del record["usage"]["unavailable_reason"]
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "usage.unavailable_reason"):
                 tool.read_ledger(data_dir)
 
     def test_read_ledger_rejects_hash_valid_inconsistent_tokens_consumed(self) -> None:
@@ -2450,6 +2500,33 @@ class LlmUsageReaderTests(unittest.TestCase):
             ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(tool.CliError, "usage values must be null"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_unavailable_source_without_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--source",
+                "unavailable",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            del record["usage"]["unavailable_reason"]
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "usage.unavailable_reason"):
                 tool.read_ledger(data_dir)
 
     def test_import_openai_usage(self) -> None:

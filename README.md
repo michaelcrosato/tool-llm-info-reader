@@ -111,6 +111,7 @@ Each ledger record includes:
 - `usage.cached_input_tokens`
 - `usage.tokens_consumed`
 - `usage.billed_tokens`
+- `usage.unavailable_reason`
 - `billing.actual_cost_usd`
 - `source.type`
 - `record_hash`

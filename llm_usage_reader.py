@@ -78,6 +78,7 @@ USAGE_VALUE_FIELDS = [
     "requests",
     "tokens_consumed",
 ]
+USAGE_UNAVAILABLE_REASON_SOURCES = {"local_recorder", "unavailable"}
 HOST_STRING_FIELDS = (
     "hostname",
     "os",
@@ -634,6 +635,20 @@ def usage_has_values(usage: dict[str, Any]) -> bool:
 def validate_ledger_usage(usage: dict[str, Any], path: Path, line_no: int) -> None:
     for field in USAGE_VALUE_FIELDS:
         validate_ledger_optional_nonnegative_int(usage, path, line_no, field, f"usage.{field}")
+    unavailable_reason = usage.get("unavailable_reason")
+    if unavailable_reason is not None:
+        if not isinstance(unavailable_reason, str) or not unavailable_reason.strip():
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'usage.unavailable_reason' must be a non-empty string or null",
+            )
+        if unavailable_reason != unavailable_reason.strip():
+            raise ledger_record_error(
+                path,
+                line_no,
+                "field 'usage.unavailable_reason' must not have leading or trailing whitespace",
+            )
     component_total = sum_ints(*(usage.get(field) for field in TOKEN_COMPONENT_FIELDS))
     if component_total is not None and usage.get("tokens_consumed") != component_total:
         raise ledger_record_error(
@@ -641,6 +656,11 @@ def validate_ledger_usage(usage: dict[str, Any], path: Path, line_no: int) -> No
             line_no,
             "field 'usage.tokens_consumed' must equal the sum of input/output/audio token fields",
         )
+
+
+def usage_unavailable_reason(usage: dict[str, Any]) -> str | None:
+    value = usage.get("unavailable_reason")
+    return value if isinstance(value, str) and value.strip() else None
 
 
 def validate_ledger_host(host: dict[str, Any], path: Path, line_no: int) -> None:
@@ -833,6 +853,12 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
                 "field 'billing.source' must be unavailable when source.type is local_recorder",
             )
     validate_ledger_usage(usage, path, line_no)
+    if source_type in USAGE_UNAVAILABLE_REASON_SOURCES and usage_unavailable_reason(usage) is None:
+        raise ledger_record_error(
+            path,
+            line_no,
+            f"field 'usage.unavailable_reason' is required when source.type is {source_type}",
+        )
     if source_type == "provider_export":
         validate_provider_export_payload(record, usage, billing, path, line_no)
 
@@ -1005,6 +1031,9 @@ def make_record(
     usage = usage or blank_usage()
     if source_type == "unavailable" and usage_has_values(usage):
         raise CliError("usage values cannot be set when --source is unavailable")
+    if source_type == "unavailable" and usage_unavailable_reason(usage) is None:
+        usage = dict(usage)
+        usage["unavailable_reason"] = "usage telemetry source was explicitly marked unavailable"
     record = {
         "schema_version": SCHEMA_VERSION,
         "record_id": new_id("rec"),

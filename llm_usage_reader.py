@@ -817,6 +817,13 @@ def normalize_model(model: Any) -> str | None:
     return model or None
 
 
+def normalize_cli_model(model: str | None) -> str | None:
+    normalized = normalize_model(model)
+    if model is not None and normalized is None:
+        raise CliError("--model must be a non-empty string when provided")
+    return normalized
+
+
 def make_record(
     *,
     kind: str,
@@ -905,7 +912,7 @@ def command_start(args: argparse.Namespace) -> int:
             "schema_version": SCHEMA_VERSION,
             "run_id": run_id,
             "provider": provider,
-            "model": normalize_model(args.model),
+            "model": normalize_cli_model(args.model),
             "started_at": to_iso(started_at),
             "status": "running",
             "source": {"type": "local_recorder"},
@@ -954,9 +961,7 @@ def command_finish(args: argparse.Namespace) -> int:
         else:
             provider = run["provider"]
         if args.model is not None:
-            model = normalize_model(args.model)
-            if model is None:
-                raise CliError("--model must be a non-empty string when provided")
+            model = normalize_cli_model(args.model)
         else:
             model = normalize_model(run.get("model"))
         record = make_record(
@@ -992,7 +997,7 @@ def command_record(args: argparse.Namespace) -> int:
     record = make_record(
         kind="run",
         provider=provider,
-        model=args.model,
+        model=normalize_cli_model(args.model),
         started_at=started_at,
         finished_at=finished_at,
         usage=make_usage(args),
@@ -1021,6 +1026,7 @@ def command_wrap(args: argparse.Namespace) -> int:
     if cwd is not None and not cwd.is_dir():
         raise CliError(f"--cwd must be an existing directory: {cwd}")
     provider = validate_provider(args.provider)
+    model = normalize_cli_model(args.model)
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
     with exclusive_file_lock(run_lock_path(args.data_dir, run_id)):
         if find_ledger_run_record(args.data_dir, run_id) is not None:
@@ -1037,7 +1043,7 @@ def command_wrap(args: argparse.Namespace) -> int:
             record = make_record(
                 kind="run",
                 provider=provider,
-                model=args.model,
+                model=model,
                 started_at=started_at,
                 finished_at=finished_at,
                 usage=blank_usage(),
@@ -1067,7 +1073,7 @@ def command_wrap(args: argparse.Namespace) -> int:
         record = make_record(
             kind="run",
             provider=provider,
-            model=args.model,
+            model=model,
             started_at=started_at,
             finished_at=finished_at,
             usage=blank_usage(),

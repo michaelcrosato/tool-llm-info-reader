@@ -327,6 +327,24 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_rejects_empty_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_record_strips_provider_for_summary_filters(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
@@ -2399,6 +2417,25 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(repaired_state["status"], "completed")
             self.assertEqual(repaired_state["record_id"], first_record_id)
 
+    def test_start_rejects_empty_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            code = self.run_cli(
+                data_dir,
+                "start",
+                "--run-id",
+                "run_empty_model",
+                "--provider",
+                "openai",
+                "--model",
+                "",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertFalse((data_dir / "runs" / "run_empty_model.json").exists())
+
     def test_finish_rejects_non_object_run_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
@@ -3315,6 +3352,29 @@ class LlmUsageReaderTests(unittest.TestCase):
                 data_dir,
                 "wrap",
                 "--provider",
+                "",
+                "--",
+                sys.executable,
+                "-c",
+                f"from pathlib import Path; Path({str(marker)!r}).write_text('ran')",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertFalse(marker.exists())
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_wrap_rejects_empty_model_before_running_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            marker = root / "marker.txt"
+
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--provider",
+                "local",
+                "--model",
                 "",
                 "--",
                 sys.executable,

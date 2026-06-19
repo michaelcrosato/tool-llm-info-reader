@@ -1680,6 +1680,60 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "duration_ms"):
                 tool.read_ledger(data_dir)
 
+    def test_read_ledger_rejects_hash_valid_offset_started_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["started_at"] = "2026-06-18T20:00:00+00:00"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "started_at.*canonical UTC"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_relative_created_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["created_at"] = "now"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "created_at.*canonical UTC"):
+                tool.read_ledger(data_dir)
+
     def test_read_ledger_allows_monotonic_local_recorder_duration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

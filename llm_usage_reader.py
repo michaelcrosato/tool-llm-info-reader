@@ -607,9 +607,12 @@ def validate_ledger_time_field(record: dict[str, Any], path: Path, line_no: int,
     if not isinstance(value, str) or not value:
         raise ledger_record_error(path, line_no, f"field {field!r} must be a non-empty time string")
     try:
-        return parse_time(value)
+        parsed = parse_time(value)
     except CliError as exc:
         raise ledger_record_error(path, line_no, f"field {field!r} is invalid: {exc}") from exc
+    if value != to_iso(parsed):
+        raise ledger_record_error(path, line_no, f"field {field!r} must be a canonical UTC time string")
+    return parsed
 
 
 def validate_ledger_optional_nonnegative_int(

@@ -831,6 +831,7 @@ def add_usage_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def command_start(args: argparse.Namespace) -> int:
+    provider = validate_provider(args.provider)
     data_dir = args.data_dir
     ensure_data_dir(data_dir)
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
@@ -844,7 +845,7 @@ def command_start(args: argparse.Namespace) -> int:
         run = {
             "schema_version": SCHEMA_VERSION,
             "run_id": run_id,
-            "provider": args.provider,
+            "provider": provider,
             "model": normalize_model(args.model),
             "started_at": to_iso(started_at),
             "status": "running",
@@ -889,7 +890,10 @@ def command_finish(args: argparse.Namespace) -> int:
         if finished_at < started_at:
             raise CliError("finished time cannot be earlier than started time")
 
-        provider = args.provider or run.get("provider") or "unknown"
+        if args.provider is not None:
+            provider = validate_provider(args.provider)
+        else:
+            provider = run.get("provider") or "unknown"
         model = normalize_model(args.model) or normalize_model(run.get("model"))
         record = make_record(
             kind="run",
@@ -916,13 +920,14 @@ def command_finish(args: argparse.Namespace) -> int:
 
 
 def command_record(args: argparse.Namespace) -> int:
+    provider = validate_provider(args.provider)
     started_at = parse_time(args.started_at, default=now_utc())
     finished_at = parse_time(args.finished_at, default=now_utc())
     if finished_at < started_at:
         raise CliError("finished time cannot be earlier than started time")
     record = make_record(
         kind="run",
-        provider=args.provider,
+        provider=provider,
         model=args.model,
         started_at=started_at,
         finished_at=finished_at,

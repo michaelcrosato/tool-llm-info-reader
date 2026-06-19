@@ -230,6 +230,17 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertFalse((root / "escape.json").exists())
             self.assertFalse((data_dir / "escape.json").exists())
 
+    def test_start_rejects_empty_provider_without_state_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_empty_provider"
+
+            code = self.run_cli(data_dir, "start", "--run-id", run_id, "--provider", "")
+
+            self.assertEqual(code, 2)
+            self.assertFalse((data_dir / "runs" / f"{run_id}.json").exists())
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_start_rejects_duplicate_ledger_run_id_without_state_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
@@ -297,6 +308,24 @@ class LlmUsageReaderTests(unittest.TestCase):
             records = tool.read_ledger(data_dir)
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["run_id"], run_id)
+
+    def test_record_rejects_empty_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
 
     def test_record_rejects_non_finite_manual_cost(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2014,6 +2043,42 @@ class LlmUsageReaderTests(unittest.TestCase):
 
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_finish_rejects_empty_provider_override(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            run_id = "run_empty_provider_override"
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    run_id,
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                ),
+                0,
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                run_id,
+                "--provider",
+                "",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+            run_state = json.loads((data_dir / "runs" / f"{run_id}.json").read_text(encoding="utf-8"))
+            self.assertEqual(run_state["status"], "running")
 
     def test_finish_rejects_mismatched_run_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -1424,8 +1424,9 @@ def strict_openai_model(result: dict[str, Any]) -> str | None:
 
 
 def source_file_detail(path: Path) -> dict[str, Any]:
+    source_path = path.resolve()
     return {
-        "file": str(path),
+        "file": str(source_path),
         "file_sha256": file_sha256(path),
     }
 

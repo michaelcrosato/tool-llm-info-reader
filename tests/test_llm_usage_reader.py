@@ -894,6 +894,30 @@ class LlmUsageReaderTests(unittest.TestCase):
                 "usage telemetry source was explicitly marked unavailable",
             )
 
+    def test_record_manual_without_usage_includes_unavailable_reason(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+
+            self.assertEqual(code, 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(records[0]["source"]["type"], "manual_attestation")
+            self.assertEqual(
+                records[0]["usage"]["unavailable_reason"],
+                "usage telemetry was not provided with this manual attestation",
+            )
+
     def test_record_rejects_out_of_range_epoch_time(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

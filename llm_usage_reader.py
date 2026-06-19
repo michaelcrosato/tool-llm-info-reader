@@ -1249,6 +1249,13 @@ def make_record(
     if source_type == "unavailable" and usage_unavailable_reason(usage) is None:
         usage = dict(usage)
         usage["unavailable_reason"] = "usage telemetry source was explicitly marked unavailable"
+    if (
+        source_type == "manual_attestation"
+        and not usage_has_values(usage)
+        and usage_unavailable_reason(usage) is None
+    ):
+        usage = dict(usage)
+        usage["unavailable_reason"] = "usage telemetry was not provided with this manual attestation"
     record = {
         "schema_version": SCHEMA_VERSION,
         "record_id": new_id("rec"),

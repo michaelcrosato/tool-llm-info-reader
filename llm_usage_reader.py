@@ -789,6 +789,14 @@ def validate_ledger_billing(billing: dict[str, Any], source_type: str, path: Pat
         raise ledger_record_error(path, line_no, f"field 'billing.source' has unsupported value {source!r}")
     if source in PROVIDER_BILLING_SOURCES and source_type != "provider_export":
         raise ledger_record_error(path, line_no, f"field 'billing.source' cannot be {source!r} unless source.type is provider_export")
+    if source not in PROVIDER_BILLING_SOURCES:
+        for field in (*PROVIDER_BILLING_STRING_FIELDS, "quantity"):
+            if billing.get(field) is not None:
+                raise ledger_record_error(
+                    path,
+                    line_no,
+                    f"field 'billing.{field}' can only be set with provider billing sources",
+                )
     validate_ledger_optional_decimal(billing, path, line_no, "actual_cost_usd", "billing.actual_cost_usd")
     validate_ledger_optional_decimal(billing, path, line_no, "quantity", "billing.quantity")
     if billing.get("actual_cost_usd") is None:

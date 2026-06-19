@@ -2886,6 +2886,58 @@ class LlmUsageReaderTests(unittest.TestCase):
             with self.assertRaisesRegex(tool.CliError, "billing.currency"):
                 tool.read_ledger(data_dir)
 
+    def test_read_ledger_rejects_hash_valid_unavailable_billing_with_provider_quantity(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["billing"]["quantity"] = 15
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "billing.quantity"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_manual_billing_with_provider_line_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--cost-usd",
+                "0.12",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["billing"]["line_item"] = "Completions"
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "billing.line_item"):
+                tool.read_ledger(data_dir)
+
     def test_read_ledger_rejects_hash_valid_malformed_provider_billing_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

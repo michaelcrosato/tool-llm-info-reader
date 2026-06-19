@@ -7317,6 +7317,157 @@ class LlmUsageReaderTests(unittest.TestCase):
                 self.assertEqual(record["record_hash"], tool.record_hash(record))
 
 
+    def _anthropic_costs_payload(self, *amounts: str) -> dict[str, object]:
+        descriptions = ["Claude Opus 4 Usage - Input Tokens", "Claude Opus 4 Usage - Output Tokens"]
+        token_types = ["uncached_input_tokens", "output_tokens"]
+        results = []
+        for index, amount in enumerate(amounts):
+            results.append(
+                {
+                    "amount": amount,
+                    "context_window": "0-200k",
+                    "cost_type": "tokens",
+                    "currency": "USD",
+                    "description": descriptions[index % len(descriptions)],
+                    "model": "claude-opus-4-6",
+                    "service_tier": "standard",
+                    "token_type": token_types[index % len(token_types)],
+                    "workspace_id": "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ",
+                }
+            )
+        return {
+            "data": [
+                {
+                    "starting_at": "2026-06-18T00:00:00Z",
+                    "ending_at": "2026-06-19T00:00:00Z",
+                    "results": results,
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+
+    def test_import_anthropic_costs_records_usd_and_line_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "anthropic-costs.json"
+            sample.write_text(json.dumps(self._anthropic_costs_payload("123.78912", "45.5")), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample)), 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 2)
+            by_line_item = {r["billing"]["line_item"]: r for r in records}
+            input_row = by_line_item["Claude Opus 4 Usage - Input Tokens"]
+            output_row = by_line_item["Claude Opus 4 Usage - Output Tokens"]
+            for record in records:
+                self.assertEqual(record["provider"], "anthropic")
+                self.assertEqual(record["kind"], "provider_cost_bucket")
+                self.assertIsNone(record["model"])
+                self.assertEqual(record["billing"]["source"], "provider_cost_api")
+                self.assertEqual(record["billing"]["currency"], "usd")
+            # Amounts are reported in cents and stored as USD.
+            self.assertEqual(input_row["billing"]["actual_cost_usd"], "1.2378912")
+            self.assertEqual(output_row["billing"]["actual_cost_usd"], "0.455")
+
+    def test_import_anthropic_costs_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "anthropic-costs.json"
+            sample.write_text(json.dumps(self._anthropic_costs_payload("100", "50")), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample)), 0)
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample)), 0)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 2)
+
+    def test_import_anthropic_costs_rejects_corrected_amount_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            first = root / "first.json"
+            corrected = root / "corrected.json"
+            first.write_text(json.dumps(self._anthropic_costs_payload("100")), encoding="utf-8")
+            corrected.write_text(json.dumps(self._anthropic_costs_payload("250")), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(first)), 0)
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(corrected))
+
+            self.assertEqual(code, 2)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["billing"]["actual_cost_usd"], "1")
+
+    def test_import_anthropic_costs_rejects_incomplete_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "incomplete.json"
+            payload = self._anthropic_costs_payload("100")
+            payload["has_more"] = True
+            payload["next_page"] = "2026-06-19T00:00:00Z"
+            sample.write_text(json.dumps(payload), encoding="utf-8")
+
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_import_anthropic_costs_rejects_openai_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "openai.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.costs.result",
+                                        "amount": {"value": 0.06, "currency": "usd"},
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_import_anthropic_costs_rejects_non_usd_currency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "eur.json"
+            payload = self._anthropic_costs_payload("100")
+            payload["data"][0]["results"][0]["currency"] = "EUR"
+            sample.write_text(json.dumps(payload), encoding="utf-8")
+
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_import_anthropic_costs_rejects_missing_amount(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "noamount.json"
+            payload = self._anthropic_costs_payload("100")
+            del payload["data"][0]["results"][0]["amount"]
+            sample.write_text(json.dumps(payload), encoding="utf-8")
+
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
     def test_version_flag_reports_version(self) -> None:
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as ctx:

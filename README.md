@@ -10,6 +10,7 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 - The agent/tool that produced a run (for example `claude-desktop`, `grok-cli`, `codex`, or `antigravity`) and a best-effort shell name, captured under `host.client` and `host.shell`.
 - Imported OpenAI organization completions usage buckets, including model name when the export was grouped by model.
 - Imported OpenAI organization cost buckets.
+- Imported Anthropic organization Cost Report buckets (the per-bucket amounts, reported in cents, are converted to USD).
 - Direct OpenAI Admin API usage/cost fetches for a requested period when `OPENAI_ADMIN_KEY` is available.
 - Idempotent OpenAI imports that skip previously imported bucket rows.
 - Conflict detection for corrected OpenAI bucket rows so repeated imports do not double-count changed token or cost values.
@@ -94,6 +95,14 @@ python .\llm_usage_reader.py import-openai-costs --file .\samples\openai_costs_r
 
 Use the matching import command for the export family; a cost-only export passed to `import-openai-usage`, or a usage-only export passed to `import-openai-costs`, is rejected rather than treated as an empty import.
 `import-openai-usage` supports `organization.usage.completions.result` rows. Other OpenAI usage result families, such as image, audio, vector store, or file-search usage, are rejected until the ledger has fields for their native units.
+
+Import an Anthropic organization Cost Report JSON response/export:
+
+```powershell
+python .\llm_usage_reader.py import-anthropic-costs --file .\samples\anthropic_costs_response.json
+```
+
+Anthropic reports cost amounts in the lowest currency unit (cents); they are converted to USD when stored. Anthropic usage (token) reports are not imported yet — only the Cost Report is supported for now. Imports are idempotent and conflict-checked the same way as OpenAI imports.
 Paginated OpenAI API pages must be complete before import. A page that still reports `has_more: true`, or a final page that still carries `next_page`, is rejected to avoid recording partial usage or cost evidence.
 
 Fetch OpenAI organization usage and costs directly when an admin key is present:

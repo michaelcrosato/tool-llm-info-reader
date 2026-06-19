@@ -95,6 +95,7 @@ The default data directory is `data`.
 - `data/runs/*.json`: in-progress/completed run state from `start`/`finish`.
 - `data/imported-files.json`: file hashes already imported by `watch`; malformed state is rejected.
 - `data/inbox`: optional directory for continuously imported provider export files.
+- `data/openai-exports`: saved raw responses from `fetch-openai`; repeated fetches for the same period use suffixed filenames instead of overwriting prior evidence.
 
 Each ledger record includes:
 

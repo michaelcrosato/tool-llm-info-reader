@@ -1079,6 +1079,15 @@ def openai_bucket_results(bucket: Any) -> list[Any]:
     return results
 
 
+def is_openai_bucket_like(bucket: Any) -> bool:
+    return isinstance(bucket, dict) and (
+        bucket.get("object") == "bucket"
+        or "start_time" in bucket
+        or "end_time" in bucket
+        or "results" in bucket
+    )
+
+
 def command_import_openai_usage(args: argparse.Namespace) -> int:
     path = args.file
     payload = load_json_file(path)
@@ -1409,11 +1418,11 @@ def classify_provider_export(payload: Any) -> str | None:
     saw_usage = False
     saw_cost = False
     for bucket in buckets:
-        if not isinstance(bucket, dict):
+        if not is_openai_bucket_like(bucket):
             continue
-        for result in bucket.get("results") or []:
+        for result in openai_bucket_results(bucket):
             if not isinstance(result, dict):
-                continue
+                raise CliError("OpenAI bucket result must be an object")
             obj = str(result.get("object") or "")
             saw_usage = saw_usage or obj.startswith("organization.usage.")
             saw_cost = saw_cost or obj == "organization.costs.result"

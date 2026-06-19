@@ -326,6 +326,8 @@ def load_run_state(path: Path, run_id: str) -> dict[str, Any]:
     finished_at = validate_run_state_time_field(run, path, "finished_at", required=False)
     if finished_at is not None and finished_at < started_at:
         raise CliError(f"invalid run state at {path}: finished_at cannot be earlier than started_at")
+    if run["status"] == "running" and finished_at is not None:
+        raise CliError(f"invalid run state at {path}: field 'finished_at' must be absent when status is running")
     return run
 
 

@@ -4602,6 +4602,38 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_finish_rejects_running_run_state_with_finished_at(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            runs_dir = data_dir / "runs"
+            runs_dir.mkdir(parents=True)
+            (runs_dir / "runningdone.json").write_text(
+                json.dumps(
+                    {
+                        "schema_version": tool.SCHEMA_VERSION,
+                        "run_id": "runningdone",
+                        "provider": "openai",
+                        "model": "gpt-5.4",
+                        "started_at": "2026-06-18T20:00:00Z",
+                        "finished_at": "2026-06-18T20:01:00Z",
+                        "status": "running",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(
+                data_dir,
+                "finish",
+                "--run-id",
+                "runningdone",
+                "--finished-at",
+                "2026-06-18T20:02:00Z",
+            )
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_finish_rejects_run_state_finished_before_started(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

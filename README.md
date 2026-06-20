@@ -194,3 +194,7 @@ Each record also carries a `host` object describing where it ran: machine and OS
 ## Current Boundary
 
 Direct OpenAI collection requires an admin key with organization usage/cost permissions in `OPENAI_ADMIN_KEY` or another environment variable named with `--api-key-env`. Without that key, use exported JSON files or the inbox watcher.
+
+## License
+
+Released under the [MIT License](LICENSE).

@@ -96,7 +96,7 @@ python .\llm_usage_reader.py import-openai-costs --file .\samples\openai_costs_r
 ```
 
 Use the matching import command for the export family; a cost-only export passed to `import-openai-usage`, or a usage-only export passed to `import-openai-costs`, is rejected rather than treated as an empty import.
-`import-openai-usage` supports `organization.usage.completions.result` rows. Other OpenAI usage result families, such as image, audio, vector store, or file-search usage, are rejected until the ledger has fields for their native units.
+`import-openai-usage` supports only `organization.usage.completions.result` rows. Every other `organization.usage.*` result family — such as image, audio, vector store, or file-search usage — is rejected. This is an intentional scope limitation to completions usage, not a temporary gap awaiting schema fields (the ledger already defines audio token fields, for example).
 
 Import Anthropic organization Cost Report and Messages Usage Report JSON responses/exports:
 

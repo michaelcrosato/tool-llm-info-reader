@@ -911,6 +911,12 @@ def validate_ledger_usage(usage: dict[str, Any], path: Path, line_no: int) -> No
         )
     input_tokens = usage.get("input_tokens")
     cached_input_tokens = usage.get("cached_input_tokens")
+    if cached_input_tokens is not None and input_tokens is None:
+        raise ledger_record_error(
+            path,
+            line_no,
+            "field 'usage.cached_input_tokens' cannot be set when usage.input_tokens is null",
+        )
     if input_tokens is not None and cached_input_tokens is not None and cached_input_tokens > input_tokens:
         raise ledger_record_error(
             path,

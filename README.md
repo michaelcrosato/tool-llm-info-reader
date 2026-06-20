@@ -8,6 +8,7 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 
 - Start time, finish time, duration, provider, model, exit code, and host details for local runs.
 - The agent/tool that produced a run (for example `claude-desktop`, `grok-cli`, `codex`, or `antigravity`) and a best-effort shell name, captured under `host.client` and `host.shell`.
+- Real per-message token usage parsed directly from local Claude Code session transcripts (`import-claude-code`), recorded as `vendor_session_store` adapter evidence.
 - Imported OpenAI organization completions usage buckets, including model name when the export was grouped by model.
 - Imported OpenAI organization cost buckets.
 - Imported Anthropic organization Cost Report buckets (the per-bucket amounts, reported in cents, are converted to USD).
@@ -76,7 +77,7 @@ Wrap any command to capture machine-observed start/finish/duration:
 python .\llm_usage_reader.py wrap --provider local --model unknown -- python --version
 ```
 
-`provider` and `model` are free-form, so local runs from any vendor are first-class — for example `--provider anthropic --model claude-opus-4-8`, `--provider xai --model grok-4`, `--provider google --model gemini-3-pro`, or `--provider openai --model gpt-5.4`. (Structured provider imports below are currently OpenAI-only.)
+`provider` and `model` are free-form, so local runs from any vendor are first-class — for example `--provider anthropic --model claude-opus-4-8`, `--provider xai --model grok-4`, `--provider google --model gemini-3-pro`, or `--provider openai --model gpt-5.4`. (Structured imports below cover OpenAI and Anthropic organization exports plus local Claude Code session transcripts.)
 
 Record which agent/tool produced a run with `--client` on `start`, `finish`, `record`, and `wrap`:
 
@@ -106,6 +107,18 @@ python .\llm_usage_reader.py import-anthropic-usage --file .\samples\anthropic_u
 
 Anthropic reports cost amounts in the lowest currency unit (cents); they are converted to USD when stored. For usage, Anthropic reports input token categories as disjoint counts (uncached, cache-read, and cache-creation); these are summed into the ledger's `usage.input_tokens`, with `usage.cached_input_tokens` set to the cache-read portion. The per-category breakdown is preserved in the retained raw export. Imports are idempotent and conflict-checked the same way as OpenAI imports.
 Paginated OpenAI API pages must be complete before import. A page that still reports `has_more: true`, or a final page that still carries `next_page`, is rejected to avoid recording partial usage or cost evidence.
+
+Import token usage from local Claude Code session transcripts:
+
+```powershell
+# A single session transcript
+python .\llm_usage_reader.py import-claude-code --file $env:USERPROFILE\.claude\projects\<project>\<session>.jsonl
+
+# Every transcript under a Claude Code projects directory (scanned recursively)
+python .\llm_usage_reader.py import-claude-code --projects-dir $env:USERPROFILE\.claude\projects
+```
+
+This is the first local-agent *adapter*: rather than an organization export, it reads the transcript JSONL that Claude Code writes locally and records each assistant API message's token usage as `vendor_session_store` evidence (`source.adapter = claude-code`). Token categories follow the Anthropic convention — `usage.input_tokens` is the total input (plain + cache-read + cache-creation) and `usage.cached_input_tokens` is the cache-read subset. Claude Code writes one transcript line per assistant content block, and each line repeats the same message-level usage, so each API message (`message.id`) is counted exactly once. Imports are idempotent (re-importing a growing session only appends genuinely new messages), and records carry `host.client = claude-code`. Transcripts do not contain billed cost, so `billing` is recorded as `unavailable`; use the Anthropic Cost Report import or `fetch-anthropic` for actual charges. Lines that are not assistant usage — and a partially written trailing line for an in-progress session — are skipped, while malformed token counts are rejected.
 
 Fetch OpenAI organization usage and costs directly when an admin key is present:
 

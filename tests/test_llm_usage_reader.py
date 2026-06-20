@@ -7817,6 +7817,190 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(len(tool.read_ledger(data_dir)), 0)
 
+    def _claude_code_assistant_line(
+        self,
+        *,
+        uuid: str,
+        message_id: str,
+        timestamp: str = "2026-06-18T20:00:00Z",
+        model: str = "claude-opus-4-8",
+        input_tokens: int = 10,
+        cache_read: int = 40,
+        cache_creation: int = 100,
+        output_tokens: int = 5,
+    ) -> str:
+        return json.dumps(
+            {
+                "type": "assistant",
+                "uuid": uuid,
+                "requestId": "req_1",
+                "timestamp": timestamp,
+                "sessionId": "sess_1",
+                "version": "2.0.0",
+                "message": {
+                    "id": message_id,
+                    "model": model,
+                    "role": "assistant",
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "cache_read_input_tokens": cache_read,
+                        "cache_creation_input_tokens": cache_creation,
+                        "output_tokens": output_tokens,
+                    },
+                },
+            }
+        )
+
+    def test_import_claude_code_dedups_repeated_message_lines_and_sums_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            transcript = root / "session.jsonl"
+            lines = [
+                json.dumps({"type": "user", "uuid": "x", "message": {"role": "user"}}),
+                # One API message (msg_1) split across three content-block lines that
+                # each repeat the identical message-level usage. Must count once.
+                self._claude_code_assistant_line(uuid="a1", message_id="msg_1"),
+                self._claude_code_assistant_line(uuid="a2", message_id="msg_1"),
+                self._claude_code_assistant_line(uuid="a3", message_id="msg_1"),
+                self._claude_code_assistant_line(
+                    uuid="b1",
+                    message_id="msg_2",
+                    timestamp="2026-06-18T20:05:00Z",
+                    input_tokens=2,
+                    cache_read=0,
+                    cache_creation=0,
+                    output_tokens=7,
+                ),
+            ]
+            transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-claude-code", "--file", str(transcript)), 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 2)
+
+            by_tokens = sorted(records, key=lambda r: r["usage"]["tokens_consumed"])
+            small, large = by_tokens[0], by_tokens[1]
+
+            self.assertEqual(large["provider"], "anthropic")
+            self.assertEqual(large["model"], "claude-opus-4-8")
+            self.assertEqual(large["kind"], "run")
+            self.assertEqual(large["status"], "completed")
+            self.assertEqual(large["source"]["type"], "vendor_session_store")
+            self.assertEqual(large["source"]["adapter"], "claude-code")
+            self.assertEqual(large["source"]["adapter_version"], tool.CLAUDE_CODE_ADAPTER_VERSION)
+            self.assertRegex(large["source"]["evidence_sha256"], r"^[a-f0-9]{64}$")
+            self.assertRegex(large["source"]["import_key"], r"^[a-f0-9]{64}$")
+            self.assertEqual(large["host"]["client"], "claude-code")
+            self.assertEqual(large["billing"]["source"], "unavailable")
+            self.assertIsNone(large["billing"]["actual_cost_usd"])
+            self.assertEqual(large["duration_ms"], 0)
+
+            # msg_1: input = 10 + 40 + 100 = 150, cached = 40, output = 5
+            self.assertEqual(large["usage"]["input_tokens"], 150)
+            self.assertEqual(large["usage"]["cached_input_tokens"], 40)
+            self.assertEqual(large["usage"]["output_tokens"], 5)
+            self.assertEqual(large["usage"]["tokens_consumed"], 155)
+            # msg_2: input = 2, output = 7
+            self.assertEqual(small["usage"]["input_tokens"], 2)
+            self.assertEqual(small["usage"]["tokens_consumed"], 9)
+
+            # Distinct API messages must produce distinct idempotency keys.
+            self.assertNotEqual(small["source"]["import_key"], large["source"]["import_key"])
+
+    def test_import_claude_code_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            transcript = root / "session.jsonl"
+            transcript.write_text(
+                self._claude_code_assistant_line(uuid="a1", message_id="msg_1") + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(self.run_cli(data_dir, "import-claude-code", "--file", str(transcript)), 0)
+            self.assertEqual(self.run_cli(data_dir, "import-claude-code", "--file", str(transcript)), 0)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
+    def test_import_claude_code_skips_non_usage_and_unparseable_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            transcript = root / "session.jsonl"
+            lines = [
+                json.dumps({"type": "system", "subtype": "init"}),
+                json.dumps({"type": "user", "message": {"role": "user"}}),
+                # Assistant line carrying no usage (e.g. a streaming placeholder).
+                json.dumps({"type": "assistant", "message": {"id": "msg_x", "model": "claude-opus-4-8"}}),
+                self._claude_code_assistant_line(uuid="a1", message_id="msg_1"),
+                "{ this is not valid json",  # in-progress / corrupted trailing line
+            ]
+            transcript.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-claude-code", "--file", str(transcript)), 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["usage"]["tokens_consumed"], 155)
+
+    def test_import_claude_code_rejects_negative_token_count(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            transcript = root / "session.jsonl"
+            transcript.write_text(
+                self._claude_code_assistant_line(uuid="a1", message_id="msg_1", output_tokens=-1) + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(self.run_cli(data_dir, "import-claude-code", "--file", str(transcript)), 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_import_claude_code_rejects_missing_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            transcript = root / "session.jsonl"
+            transcript.write_text(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "id": "msg_1",
+                            "model": "claude-opus-4-8",
+                            "usage": {"input_tokens": 1, "output_tokens": 1},
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(self.run_cli(data_dir, "import-claude-code", "--file", str(transcript)), 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_import_claude_code_projects_dir_scans_recursively(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            projects = root / "projects"
+            (projects / "proj-a").mkdir(parents=True)
+            (projects / "proj-b").mkdir(parents=True)
+            (projects / "proj-a" / "s1.jsonl").write_text(
+                self._claude_code_assistant_line(uuid="a1", message_id="msg_1") + "\n",
+                encoding="utf-8",
+            )
+            (projects / "proj-b" / "s2.jsonl").write_text(
+                self._claude_code_assistant_line(uuid="b1", message_id="msg_2") + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                self.run_cli(data_dir, "import-claude-code", "--projects-dir", str(projects)), 0
+            )
+            self.assertEqual(len(tool.read_ledger(data_dir)), 2)
+
+    def test_import_claude_code_requires_a_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            with self.assertRaises(SystemExit):
+                self.run_cli(data_dir, "import-claude-code")
+
     def test_version_flag_reports_version(self) -> None:
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as ctx:

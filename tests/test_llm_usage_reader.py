@@ -628,6 +628,63 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_record_rejects_cached_input_tokens_without_input_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--output-tokens",
+                "10",
+                "--cached-input-tokens",
+                "5",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
+    def test_read_ledger_rejects_cached_input_tokens_without_input_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "10",
+                "--cached-input-tokens",
+                "5",
+            )
+            self.assertEqual(code, 0)
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            # Drop input_tokens (and the other components) while keeping the cached
+            # subset present: cached tokens cannot exist without their input total.
+            record["usage"]["input_tokens"] = None
+            record["usage"]["output_tokens"] = None
+            record["usage"]["tokens_consumed"] = None
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(
+                tool.CliError, "cached_input_tokens.*cannot be set when usage.input_tokens is null"
+            ):
+                tool.read_ledger(data_dir)
+
     def test_record_rejects_completed_status_with_nonzero_exit_code(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

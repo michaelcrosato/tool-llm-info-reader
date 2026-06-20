@@ -7817,6 +7817,69 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(len(tool.read_ledger(data_dir)), 0)
 
+    def test_fsync_fileno_swallows_oserror(self) -> None:
+        with mock.patch.object(tool.os, "fsync", side_effect=OSError("fsync unsupported")):
+            # A platform/filesystem that does not support fsync must not break writes.
+            tool.fsync_fileno(123)
+
+    def test_fsync_directory_does_not_raise(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tool.fsync_directory(Path(tmp))
+            # A missing directory is tolerated (best-effort durability hook).
+            tool.fsync_directory(Path(tmp) / "missing")
+
+    def test_atomic_write_json_fsyncs_temp_before_replace(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "state.json"
+            existed_at_fsync: list[bool] = []
+            with mock.patch.object(
+                tool.os, "fsync", side_effect=lambda fileno: existed_at_fsync.append(dest.exists())
+            ):
+                tool.atomic_write_json(dest, {"a": 1})
+            self.assertTrue(dest.exists())
+            self.assertEqual(json.loads(dest.read_text(encoding="utf-8")), {"a": 1})
+            self.assertTrue(existed_at_fsync, "atomic_write_json should fsync the temp file")
+            # The first fsync is the staged temp file, before the atomic replace,
+            # so the destination must not exist yet at that point.
+            self.assertFalse(existed_at_fsync[0])
+
+    def test_write_new_json_fsyncs_temp_before_link(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            dest = Path(tmp) / "evidence.json"
+            existed_at_fsync: list[bool] = []
+            with mock.patch.object(
+                tool.os, "fsync", side_effect=lambda fileno: existed_at_fsync.append(dest.exists())
+            ):
+                published = tool.write_new_json(dest, {"k": "v"})
+            self.assertEqual(published, dest)
+            self.assertEqual(json.loads(dest.read_text(encoding="utf-8")), {"k": "v"})
+            self.assertTrue(existed_at_fsync, "write_new_json should fsync the temp file")
+            # The first fsync is the staged temp file, before os.link publishes it.
+            self.assertFalse(existed_at_fsync[0])
+
+    def test_append_ledger_fsyncs_ledger_during_append(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            calls: list[int] = []
+            with mock.patch.object(tool.os, "fsync", side_effect=lambda fileno: calls.append(fileno)):
+                code = self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "100",
+                )
+            self.assertEqual(code, 0)
+            self.assertTrue(calls, "append_ledger should fsync the ledger before releasing the lock")
+            self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
     def test_version_flag_reports_version(self) -> None:
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as ctx:

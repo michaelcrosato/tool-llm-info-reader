@@ -17,8 +17,10 @@ import math
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -145,6 +147,32 @@ PROVIDER_EXPORT_OBJECTS = {
     ("anthropic", "provider_usage_bucket"): ANTHROPIC_USAGE_OBJECT,
 }
 SUPPORTED_PROVIDER_EXPORT_PROVIDERS = frozenset({"openai", "anthropic"})
+
+# --- 1-shot benchmarking ---------------------------------------------------
+# The benchmark layer runs a defined prompt against a model, verifies the
+# output against a deterministic grader (the program owns the test criteria,
+# never the LLM), and records machine-observed timing plus provider-reported
+# usage as a regular ``run`` record. Benchmark provenance lives in an optional
+# ``benchmark`` object that is covered by ``record_hash`` like every other
+# field, so it is tamper-evident.
+BENCHMARK_EVIDENCE_LEVELS = {
+    "provider_reconciled",
+    "native_telemetry",
+    "vendor_session_store",
+    "simulated",
+    "manual_attestation",
+    "unavailable",
+}
+# Evidence levels that may carry a benchmark_eligible=True verdict. A simulated
+# or unavailable run can never be benchmark-eligible: it has no real telemetry.
+BENCHMARK_ELIGIBLE_EVIDENCE_LEVELS = {
+    "provider_reconciled",
+    "native_telemetry",
+    "vendor_session_store",
+}
+BENCHMARK_REQUIRED_STRING_FIELDS = ("oneshot_id", "category", "adapter", "grader", "evidence_level")
+BENCHMARK_OPTIONAL_STRING_FIELDS = ("adapter_version", "model_requested", "detail")
+BENCHMARK_DECIMAL_FIELDS = ("reported_cost_usd", "estimated_cost_usd")
 
 
 class CliError(Exception):
@@ -989,6 +1017,78 @@ def validate_ledger_host(host: dict[str, Any], path: Path, line_no: int) -> None
             )
 
 
+def validate_ledger_benchmark(record: dict[str, Any], path: Path, line_no: int) -> None:
+    benchmark = record.get("benchmark")
+    if benchmark is None:
+        return
+    if not isinstance(benchmark, dict):
+        raise ledger_record_error(path, line_no, "field 'benchmark' must be an object")
+    if record.get("kind") != "run":
+        raise ledger_record_error(path, line_no, "field 'benchmark' is only allowed when kind is run")
+    for field in BENCHMARK_REQUIRED_STRING_FIELDS:
+        value = benchmark.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ledger_record_error(path, line_no, f"field 'benchmark.{field}' must be a non-empty string")
+        if value != value.strip():
+            raise ledger_record_error(
+                path, line_no, f"field 'benchmark.{field}' must not have leading or trailing whitespace"
+            )
+    for field in BENCHMARK_OPTIONAL_STRING_FIELDS:
+        value = benchmark.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value:
+            raise ledger_record_error(path, line_no, f"field 'benchmark.{field}' must be a non-empty string or null")
+    evidence_level = benchmark.get("evidence_level")
+    if evidence_level not in BENCHMARK_EVIDENCE_LEVELS:
+        raise ledger_record_error(
+            path, line_no, f"field 'benchmark.evidence_level' has unsupported value {evidence_level!r}"
+        )
+    passed = benchmark.get("passed")
+    if not isinstance(passed, bool):
+        raise ledger_record_error(path, line_no, "field 'benchmark.passed' must be a boolean")
+    simulated = benchmark.get("simulated")
+    if not isinstance(simulated, bool):
+        raise ledger_record_error(path, line_no, "field 'benchmark.simulated' must be a boolean")
+    eligible = benchmark.get("benchmark_eligible")
+    if not isinstance(eligible, bool):
+        raise ledger_record_error(path, line_no, "field 'benchmark.benchmark_eligible' must be a boolean")
+    if eligible and evidence_level not in BENCHMARK_ELIGIBLE_EVIDENCE_LEVELS:
+        raise ledger_record_error(
+            path,
+            line_no,
+            f"field 'benchmark.benchmark_eligible' cannot be true for evidence_level {evidence_level!r}",
+        )
+    if simulated and eligible:
+        raise ledger_record_error(
+            path, line_no, "field 'benchmark.benchmark_eligible' cannot be true for a simulated run"
+        )
+    score = benchmark.get("score")
+    if isinstance(score, bool) or not isinstance(score, (int, float)):
+        raise ledger_record_error(path, line_no, "field 'benchmark.score' must be a number")
+    if not (0.0 <= float(score) <= 1.0):
+        raise ledger_record_error(path, line_no, "field 'benchmark.score' must be between 0 and 1")
+    latency_ms = benchmark.get("latency_ms")
+    if isinstance(latency_ms, bool) or not isinstance(latency_ms, int) or latency_ms < 0:
+        raise ledger_record_error(path, line_no, "field 'benchmark.latency_ms' must be a non-negative integer")
+    response_sha256 = benchmark.get("response_sha256")
+    if response_sha256 is not None and (
+        not isinstance(response_sha256, str) or not SHA256_PATTERN.fullmatch(response_sha256)
+    ):
+        raise ledger_record_error(
+            path, line_no, "field 'benchmark.response_sha256' must be a sha256 hex string or null"
+        )
+    for field in BENCHMARK_DECIMAL_FIELDS:
+        validate_ledger_optional_decimal(benchmark, path, line_no, field, f"benchmark.{field}")
+    # The benchmark verdict must agree with the run's own status invariants:
+    # a pass is a completed run; a non-pass is a failed or incomplete run.
+    status = record.get("status")
+    if passed and status != "completed":
+        raise ledger_record_error(path, line_no, "field 'benchmark.passed' is true but status is not completed")
+    if not passed and status == "completed":
+        raise ledger_record_error(path, line_no, "field 'benchmark.passed' is false but status is completed")
+
+
 def validate_ledger_schema_version(record: dict[str, Any], path: Path, line_no: int) -> None:
     schema_version = record.get("schema_version")
     if isinstance(schema_version, bool) or not isinstance(schema_version, int):
@@ -1151,6 +1251,7 @@ def validate_ledger_record(record: Any, path: Path, line_no: int) -> None:
         raise CliError(f"invalid ledger record at {path}:{line_no}: record_hash mismatch")
     validate_ledger_schema_version(record, path, line_no)
     validate_ledger_metadata(record, path, line_no)
+    validate_ledger_benchmark(record, path, line_no)
     source = validate_ledger_object_field(record, path, line_no, "source")
     validate_ledger_source(source, path, line_no)
     started_at = validate_ledger_time_field(record, path, line_no, "started_at")
@@ -1426,6 +1527,7 @@ def make_record(
     exit_code: int | None = None,
     notes: str | None = None,
     client: str | None = None,
+    benchmark: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
     source = {"type": source_type}
@@ -1468,6 +1570,8 @@ def make_record(
         "notes": notes,
         "created_at": to_iso(now_utc()),
     }
+    if benchmark is not None:
+        record["benchmark"] = benchmark
     return refresh_record_hash(record)
 
 
@@ -3454,6 +3558,1218 @@ def command_verify(args: argparse.Namespace) -> int:
     return 0
 
 
+# ===========================================================================
+# 1-shot benchmarking
+# ---------------------------------------------------------------------------
+# A "1-shot" is a single-prompt task paired with a deterministic grader. The
+# program owns the test criteria (the grader), never the model: a model is
+# asked the prompt, the grader checks the response, and the result is recorded
+# as a regular timed ``run`` with machine-observed latency and provider-reported
+# usage. This makes the benchmark reproducible and the efficiency numbers
+# trustworthy, the same way the rest of this tool refuses to let the LLM author
+# its own telemetry.
+# ===========================================================================
+
+# Pricing is only ever used to compute a clearly-labelled *estimated* cost; the
+# authoritative billing block stays "unavailable" for runs. Snapshot date is
+# stored so a stale table is obvious. Verified Anthropic public pricing.
+PRICING_SNAPSHOT_DATE = "2026-06-04"
+MODEL_PRICING_USD_PER_MTOK = {
+    "claude-opus-4-8": (Decimal("5"), Decimal("25")),
+    "claude-opus-4-7": (Decimal("5"), Decimal("25")),
+    "claude-opus-4-6": (Decimal("5"), Decimal("25")),
+    "claude-sonnet-4-6": (Decimal("3"), Decimal("15")),
+    "claude-haiku-4-5": (Decimal("1"), Decimal("5")),
+    "claude-fable-5": (Decimal("10"), Decimal("50")),
+}
+
+
+def base_model_id(model: str | None) -> str | None:
+    if not model:
+        return None
+    # Strip a context-window marker such as the "[1m]" some clients append.
+    return model.split("[", 1)[0].strip() or None
+
+
+def estimate_cost_usd(model: str | None, input_tokens: int | None, output_tokens: int | None) -> str | None:
+    base = base_model_id(model)
+    if base is None or input_tokens is None or output_tokens is None:
+        return None
+    price = MODEL_PRICING_USD_PER_MTOK.get(base)
+    if price is None:
+        return None
+    price_in, price_out = price
+    cost = (Decimal(input_tokens) / Decimal(1_000_000)) * price_in + (
+        Decimal(output_tokens) / Decimal(1_000_000)
+    ) * price_out
+    return str(cost.quantize(Decimal("0.000001")))
+
+
+# --- graders ---------------------------------------------------------------
+# Every grader returns (passed, score, detail). score is in [0, 1]; for the
+# binary graders it is 1.0 or 0.0. Graders never raise on bad model output —
+# unparseable output is simply a failing grade with an explanatory detail.
+
+_PUNCT_RE = re.compile(r"[^\w\s]")
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+_NUMBER_RE = re.compile(r"-?\d+(?:\.\d+)?")
+_CODE_FENCE_RE = re.compile(r"```[A-Za-z0-9+#.\-]*\n(.*?)```", re.DOTALL)
+
+
+def normalize_answer(text: str, *, strip: bool = True, lowercase: bool = False, strip_punct: bool = False) -> str:
+    value = text
+    if strip:
+        value = value.strip()
+    if strip_punct:
+        value = _PUNCT_RE.sub("", value).strip()
+    if lowercase:
+        value = value.lower()
+    return value
+
+
+def extract_numbers(text: str) -> list[float]:
+    return [float(token) for token in _NUMBER_RE.findall(text.replace(",", ""))]
+
+
+def extract_json(text: str) -> Any:
+    candidate = text.strip()
+    fence = _CODE_FENCE_RE.search(candidate)
+    if fence:
+        candidate = fence.group(1).strip()
+    try:
+        return json.loads(candidate)
+    except (json.JSONDecodeError, ValueError):
+        pass
+    for opener, closer in (("{", "}"), ("[", "]")):
+        start = candidate.find(opener)
+        end = candidate.rfind(closer)
+        if start != -1 and end > start:
+            try:
+                return json.loads(candidate[start : end + 1])
+            except (json.JSONDecodeError, ValueError):
+                continue
+    raise ValueError("no JSON object or array found in output")
+
+
+def extract_code(text: str) -> str:
+    fence = _CODE_FENCE_RE.search(text)
+    if fence:
+        return fence.group(1)
+    return text
+
+
+def count_words(text: str) -> int:
+    return len(_WORD_RE.findall(text))
+
+
+def _grade_exact_match(output: str, config: dict[str, Any]) -> tuple[bool, float, str]:
+    expected = str(config["expected"])
+    opts = {k: config.get(k, default) for k, default in (("strip", True), ("lowercase", False), ("strip_punct", False))}
+    got = normalize_answer(output, **opts)
+    want = normalize_answer(expected, **opts)
+    passed = got == want
+    return passed, 1.0 if passed else 0.0, f"expected {want!r}, got {got!r}"
+
+
+def _grade_numeric_equals(output: str, config: dict[str, Any]) -> tuple[bool, float, str]:
+    expected = float(config["expected"])
+    tol = float(config.get("tolerance", 0.0))
+    numbers = extract_numbers(output)
+    passed = any(abs(n - expected) <= tol for n in numbers)
+    return passed, 1.0 if passed else 0.0, f"expected {expected}, found {numbers}"
+
+
+def _grade_not_contains(output: str, config: dict[str, Any]) -> tuple[bool, float, str]:
+    forbidden = config["forbidden"]
+    haystack = output.lower() if config.get("case_insensitive", True) else output
+    hits = [word for word in forbidden if (word.lower() if config.get("case_insensitive", True) else word) in haystack]
+    min_words = config.get("min_words", 1)
+    enough = count_words(output) >= min_words
+    passed = not hits and enough
+    if hits:
+        detail = f"output contained forbidden term(s): {hits}"
+    elif not enough:
+        detail = f"output had fewer than {min_words} word(s)"
+    else:
+        detail = "no forbidden terms present"
+    return passed, 1.0 if passed else 0.0, detail
+
+
+def _navigate_json(value: Any, path: Any) -> Any:
+    if path is None:
+        return value
+    keys = path if isinstance(path, list) else [path]
+    for key in keys:
+        value = value[key]
+    return value
+
+
+def _grade_json_equals(output: str, config: dict[str, Any]) -> tuple[bool, float, str]:
+    try:
+        parsed = extract_json(output)
+    except ValueError as exc:
+        return False, 0.0, str(exc)
+    try:
+        actual = _navigate_json(parsed, config.get("path"))
+    except (KeyError, IndexError, TypeError) as exc:
+        return False, 0.0, f"could not read path {config.get('path')!r}: {exc}"
+    expected = config["expected"]
+    if config.get("numeric"):
+        try:
+            passed = abs(float(actual) - float(expected)) <= float(config.get("tolerance", 0.0))
+        except (TypeError, ValueError):
+            passed = False
+    else:
+        passed = actual == expected
+    return passed, 1.0 if passed else 0.0, f"expected {expected!r}, got {actual!r}"
+
+
+def _grade_summary(output: str, config: dict[str, Any]) -> tuple[bool, float, str]:
+    stripped = output.strip()
+    words = count_words(stripped)
+    max_words = config.get("max_words", 25)
+    terminators = sum(stripped.count(ch) for ch in ".!?")
+    ends_ok = stripped.endswith((".", "!", "?"))
+    single_sentence = terminators == 1 and ends_ok
+    within = words <= max_words
+    passed = single_sentence and within and words > 0
+    detail = f"{words} word(s), {terminators} sentence terminator(s); need <= {max_words} words and one sentence"
+    return passed, 1.0 if passed else 0.0, detail
+
+
+def _grade_word_count(output: str, config: dict[str, Any]) -> tuple[bool, float, str]:
+    count = int(config["count"])
+    tol = int(config.get("tolerance", 0))
+    words = count_words(output.strip())
+    passed = abs(words - count) <= tol
+    return passed, 1.0 if passed else 0.0, f"expected {count} word(s) (+/-{tol}), got {words}"
+
+
+_PYTHON_FUNCTION_RUNNER = (
+    "import json, sys, importlib.util\n"
+    "spec = importlib.util.spec_from_file_location('candidate', 'candidate.py')\n"
+    "mod = importlib.util.module_from_spec(spec)\n"
+    "spec.loader.exec_module(mod)\n"
+    "cases = json.loads(sys.argv[1])\n"
+    "fn = getattr(mod, sys.argv[2])\n"
+    "results = []\n"
+    "for case in cases:\n"
+    "    try:\n"
+    "        results.append(fn(*case['args']) == case['expected'])\n"
+    "    except Exception:\n"
+    "        results.append(False)\n"
+    "print(json.dumps(results))\n"
+)
+
+
+def _grade_python_function(output: str, config: dict[str, Any]) -> tuple[bool, float, str]:
+    function_name = config["function_name"]
+    cases = config["cases"]
+    timeout = float(config.get("timeout", 10.0))
+    code = extract_code(output)
+    work = Path(tempfile.mkdtemp(prefix="oneshot-grade-"))
+    try:
+        (work / "candidate.py").write_text(code, encoding="utf-8")
+        (work / "runner.py").write_text(_PYTHON_FUNCTION_RUNNER, encoding="utf-8")
+        try:
+            completed = subprocess.run(
+                [sys.executable, "runner.py", json.dumps(cases), function_name],
+                cwd=str(work),
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return False, 0.0, f"candidate code timed out after {timeout}s"
+        if completed.returncode != 0:
+            detail = (completed.stderr or "candidate code failed to run").strip().splitlines()
+            return False, 0.0, detail[-1] if detail else "candidate code failed to run"
+        try:
+            results = json.loads(completed.stdout.strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            return False, 0.0, "could not read grader output"
+        passed_count = sum(1 for r in results if r)
+        total = len(results) or 1
+        passed = passed_count == len(results) and len(results) > 0
+        return passed, passed_count / total, f"{passed_count}/{len(results)} case(s) passed"
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+GRADERS = {
+    "exact_match": _grade_exact_match,
+    "numeric_equals": _grade_numeric_equals,
+    "not_contains": _grade_not_contains,
+    "json_equals": _grade_json_equals,
+    "summary": _grade_summary,
+    "word_count": _grade_word_count,
+    "python_function": _grade_python_function,
+}
+
+
+def grade_output(output: str, grader: dict[str, Any]) -> dict[str, Any]:
+    grader_type = grader.get("type")
+    fn = GRADERS.get(grader_type)
+    if fn is None:
+        raise CliError(f"unknown grader type: {grader_type!r}")
+    if output is None:
+        return {"passed": False, "score": 0.0, "detail": "no model output"}
+    passed, score, detail = fn(output, grader)
+    return {"passed": bool(passed), "score": float(score), "detail": detail}
+
+
+# --- 1-shot library --------------------------------------------------------
+# A curated, growing set of single-prompt tasks across common professional
+# situations. Each entry teaches by example (example_answer + explanation) and
+# is independently verifiable (grader). The library is the accumulating value:
+# good prompts plus objective acceptance criteria.
+ONESHOTS: list[dict[str, Any]] = [
+    {
+        "id": "instruction-exact-word",
+        "title": "Emit one exact token, nothing else",
+        "category": "instruction-following",
+        "difficulty": "easy",
+        "prompt": "Reply with exactly the word BANANA in uppercase and nothing else. No punctuation, no explanation.",
+        "grader": {"type": "exact_match", "expected": "BANANA", "strip": True},
+        "example_answer": "BANANA",
+        "explanation": (
+            "Tests whether the model can suppress its instinct to add preamble or punctuation. "
+            "A surprising number of models fail by adding a period or a 'Sure!'."
+        ),
+        "tags": ["formatting", "control"],
+    },
+    {
+        "id": "math-multiply",
+        "title": "Two-digit multiplication",
+        "category": "reasoning-math",
+        "difficulty": "easy",
+        "prompt": "What is 17 multiplied by 23? Reply with only the number.",
+        "grader": {"type": "numeric_equals", "expected": 391},
+        "example_answer": "391",
+        "explanation": "Basic arithmetic with an output-format constraint. Checks both correctness and instruction-following.",
+        "tags": ["math"],
+    },
+    {
+        "id": "math-sum-list",
+        "title": "Sum a list of numbers",
+        "category": "reasoning-math",
+        "difficulty": "easy",
+        "prompt": "Add all of these numbers and reply with only the sum: 4, 8, 15, 16, 23, 42.",
+        "grader": {"type": "numeric_equals", "expected": 108},
+        "example_answer": "108",
+        "explanation": "Multi-step addition. Good for spotting models that drop a term or mis-add.",
+        "tags": ["math"],
+    },
+    {
+        "id": "extract-invoice-total",
+        "title": "Extract a total as JSON",
+        "category": "extraction",
+        "difficulty": "medium",
+        "system": "You return only JSON. No prose, no code fences unless asked.",
+        "prompt": (
+            "Extract the total amount due as JSON of the form {\"total\": <number>} from this text:\n"
+            "Invoice #44 — 3 widgets at $12.50 = $37.50. Tax $3.00. Total due: $40.50."
+        ),
+        "grader": {"type": "json_equals", "path": "total", "expected": 40.5, "numeric": True},
+        "example_answer": "{\"total\": 40.50}",
+        "explanation": "Structured extraction with a numeric field. The grader parses the JSON and checks the value, tolerating whitespace and formatting.",
+        "tags": ["json", "structured-output", "finance"],
+    },
+    {
+        "id": "classify-sentiment",
+        "title": "One-word sentiment classification",
+        "category": "classification",
+        "difficulty": "easy",
+        "prompt": (
+            "Classify the sentiment of this review as exactly one word — positive, negative, or neutral:\n"
+            "'The product broke after two days and support ignored me.'\n"
+            "Reply with only that word."
+        ),
+        "grader": {"type": "exact_match", "expected": "negative", "lowercase": True, "strip_punct": True},
+        "example_answer": "negative",
+        "explanation": "Classification with a constrained label set. The grader lower-cases and strips punctuation so 'Negative.' still passes.",
+        "tags": ["classification", "nlp"],
+    },
+    {
+        "id": "extract-email",
+        "title": "Pull an email address out of prose",
+        "category": "extraction",
+        "difficulty": "medium",
+        "prompt": "Extract the email address from this text and reply with only the email: 'Contact me at jane.doe+test@example.co.uk for details.'",
+        "grader": {"type": "exact_match", "expected": "jane.doe+test@example.co.uk", "strip": True},
+        "example_answer": "jane.doe+test@example.co.uk",
+        "explanation": "Entity extraction with a tricky address (plus-tag and multi-part TLD). Catches models that normalize or truncate the address.",
+        "tags": ["extraction", "regex"],
+    },
+    {
+        "id": "code-is-palindrome",
+        "title": "Write is_palindrome()",
+        "category": "coding",
+        "difficulty": "medium",
+        "prompt": (
+            "Write a Python function `is_palindrome(s)` that returns True if the string s is a palindrome, "
+            "ignoring case and all non-alphanumeric characters, and False otherwise. "
+            "Reply with only the code in a single Python code block."
+        ),
+        "grader": {
+            "type": "python_function",
+            "function_name": "is_palindrome",
+            "cases": [
+                {"args": ["A man, a plan, a canal: Panama"], "expected": True},
+                {"args": ["hello"], "expected": False},
+                {"args": [""], "expected": True},
+                {"args": ["Was it a car or a cat I saw?"], "expected": True},
+                {"args": ["abca"], "expected": False},
+            ],
+        },
+        "example_answer": "```python\nimport re\n\n\ndef is_palindrome(s):\n    t = re.sub(r'[^a-z0-9]', '', s.lower())\n    return t == t[::-1]\n```",
+        "explanation": "A real coding task graded by executing the model's code against hidden test cases — pass/fail is objective, not vibes.",
+        "tags": ["coding", "python", "executable"],
+    },
+    {
+        "id": "code-fizzbuzz",
+        "title": "Write fizzbuzz()",
+        "category": "coding",
+        "difficulty": "easy",
+        "prompt": (
+            "Write a Python function `fizzbuzz(n)` that returns 'FizzBuzz' if n is divisible by both 3 and 5, "
+            "'Fizz' if divisible by 3, 'Buzz' if divisible by 5, and otherwise the number as a string. "
+            "Reply with only the code in a single Python code block."
+        ),
+        "grader": {
+            "type": "python_function",
+            "function_name": "fizzbuzz",
+            "cases": [
+                {"args": [3], "expected": "Fizz"},
+                {"args": [5], "expected": "Buzz"},
+                {"args": [15], "expected": "FizzBuzz"},
+                {"args": [7], "expected": "7"},
+                {"args": [1], "expected": "1"},
+            ],
+        },
+        "example_answer": "```python\ndef fizzbuzz(n):\n    if n % 15 == 0:\n        return 'FizzBuzz'\n    if n % 3 == 0:\n        return 'Fizz'\n    if n % 5 == 0:\n        return 'Buzz'\n    return str(n)\n```",
+        "explanation": "Classic warm-up, executed and graded. Checks correct ordering of the divisibility checks.",
+        "tags": ["coding", "python", "executable"],
+    },
+    {
+        "id": "format-five-words",
+        "title": "Produce an exactly-five-word sentence",
+        "category": "format-constraint",
+        "difficulty": "medium",
+        "prompt": "Write a sentence about the ocean that is exactly five words long. Reply with only the sentence.",
+        "grader": {"type": "word_count", "count": 5},
+        "example_answer": "The ocean is very deep.",
+        "explanation": "Tight length constraints are a classic model weakness. The grader counts words, tolerating a trailing period.",
+        "tags": ["formatting", "control"],
+    },
+    {
+        "id": "convert-iso-date",
+        "title": "Normalize a date to ISO 8601",
+        "category": "extraction",
+        "difficulty": "medium",
+        "prompt": "Convert the date 'March 5, 2026' to ISO 8601 format (YYYY-MM-DD). Reply with only the date.",
+        "grader": {"type": "exact_match", "expected": "2026-03-05", "strip": True},
+        "example_answer": "2026-03-05",
+        "explanation": "Date normalization with a strict output format — checks zero-padding and ordering.",
+        "tags": ["formatting", "dates"],
+    },
+    {
+        "id": "reason-boolean-power",
+        "title": "Evaluate a numeric comparison",
+        "category": "reasoning-math",
+        "difficulty": "easy",
+        "prompt": "Is 2 to the power of 10 greater than 1000? Reply with only True or False.",
+        "grader": {"type": "exact_match", "expected": "True", "strip": True, "strip_punct": True},
+        "example_answer": "True",
+        "explanation": "Tiny reasoning task with a boolean output constraint (1024 > 1000).",
+        "tags": ["reasoning", "math"],
+    },
+    {
+        "id": "reason-syllogism",
+        "title": "Transitive syllogism",
+        "category": "reasoning-math",
+        "difficulty": "medium",
+        "prompt": (
+            "If all Bloops are Razzies and all Razzies are Lazzies, are all Bloops definitely Lazzies? "
+            "Answer with only Yes or No."
+        ),
+        "grader": {"type": "exact_match", "expected": "yes", "lowercase": True, "strip_punct": True},
+        "example_answer": "Yes",
+        "explanation": "Pure logical transitivity with nonsense nouns, so the model can't pattern-match from training facts.",
+        "tags": ["reasoning", "logic"],
+    },
+    {
+        "id": "instruction-avoid-word",
+        "title": "Answer while avoiding a forbidden word",
+        "category": "instruction-following",
+        "difficulty": "medium",
+        "prompt": "Name a common red fruit, but do NOT use the word 'apple' anywhere in your answer. Reply with only the fruit name.",
+        "grader": {"type": "not_contains", "forbidden": ["apple"], "min_words": 1},
+        "example_answer": "cherry",
+        "explanation": "Negative constraint following — the model must produce a valid answer while respecting a prohibition.",
+        "tags": ["instruction-following", "control"],
+    },
+    {
+        "id": "extract-capital",
+        "title": "Single-fact recall with format constraint",
+        "category": "extraction",
+        "difficulty": "easy",
+        "prompt": "What is the capital of France? Reply with only the city name.",
+        "grader": {"type": "exact_match", "expected": "Paris", "strip": True, "strip_punct": True},
+        "example_answer": "Paris",
+        "explanation": "A trivial fact wrapped in an output constraint — a fast smoke test for any model or adapter.",
+        "tags": ["recall", "smoke-test"],
+    },
+    {
+        "id": "summarize-one-sentence",
+        "title": "Summarize in one short sentence",
+        "category": "format-constraint",
+        "difficulty": "hard",
+        "prompt": (
+            "Summarize the following in exactly one sentence of 20 words or fewer, ending with a period:\n"
+            "Bees are vital pollinators. As they gather nectar they move pollen between flowers, which lets "
+            "many plants reproduce. This supports both wild ecosystems and a large share of global agriculture."
+        ),
+        "grader": {"type": "summary", "max_words": 20},
+        "example_answer": "Bees pollinate plants as they gather nectar, sustaining wild ecosystems and much of global agriculture.",
+        "explanation": "Compression under a hard length budget and a single-sentence constraint — a common real editing task.",
+        "tags": ["summarization", "formatting"],
+    },
+    {
+        "id": "extract-json-array-sorted",
+        "title": "Build a sorted JSON array from prose",
+        "category": "extraction",
+        "difficulty": "hard",
+        "system": "You return only JSON. No prose, no commentary.",
+        "prompt": (
+            "From the text 'apples 3, bananas 5, cherries 2', output a JSON array of objects with keys "
+            "'item' and 'qty', sorted by qty in descending order. Reply with only the JSON array."
+        ),
+        "grader": {
+            "type": "json_equals",
+            "expected": [
+                {"item": "bananas", "qty": 5},
+                {"item": "apples", "qty": 3},
+                {"item": "cherries", "qty": 2},
+            ],
+        },
+        "example_answer": "[{\"item\": \"bananas\", \"qty\": 5}, {\"item\": \"apples\", \"qty\": 3}, {\"item\": \"cherries\", \"qty\": 2}]",
+        "explanation": "Combines extraction, structuring, and sorting. The grader checks the full parsed structure including array order.",
+        "tags": ["json", "structured-output", "sorting"],
+    },
+]
+
+ONESHOTS_BY_ID = {entry["id"]: entry for entry in ONESHOTS}
+
+
+def get_oneshot(oneshot_id: str) -> dict[str, Any]:
+    entry = ONESHOTS_BY_ID.get(oneshot_id)
+    if entry is None:
+        raise CliError(f"unknown 1-shot id: {oneshot_id!r} (try 'oneshot list')")
+    return entry
+
+
+def resolve_oneshots(args: argparse.Namespace) -> list[dict[str, Any]]:
+    if getattr(args, "ids", None):
+        ids = [piece.strip() for piece in args.ids.split(",") if piece.strip()]
+        return [get_oneshot(one) for one in ids]
+    # The whole library is the default; --all is an explicit alias for it.
+    selected = list(ONESHOTS)
+    category = getattr(args, "category", None)
+    if category:
+        selected = [entry for entry in selected if entry["category"] == category]
+        if not selected:
+            raise CliError(f"no 1-shots in category {category!r}")
+    return selected
+
+
+# --- adapters --------------------------------------------------------------
+# An adapter turns a prompt into an Invocation: the response text plus whatever
+# trustworthy telemetry the channel exposes (provider-reported tokens/cost,
+# the real model id). Machine-observed timing is captured by the runner, not
+# the adapter. Adapters never fabricate usage — when a channel does not expose
+# tokens, usage stays None and the run records that honestly.
+
+
+class AdapterUnavailable(Exception):
+    """The adapter cannot run here (missing CLI, missing key). No record is written."""
+
+
+class AdapterError(Exception):
+    """The adapter ran but failed to produce a usable response. Recorded as incomplete."""
+
+
+def make_invocation(
+    *,
+    response_text: str,
+    model: str | None,
+    evidence_level: str,
+    adapter: str,
+    adapter_version: str,
+    input_tokens: int | None = None,
+    output_tokens: int | None = None,
+    cached_input_tokens: int | None = None,
+    reported_cost_usd: str | None = None,
+    raw: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "response_text": response_text,
+        "model": normalize_model(model),
+        "evidence_level": evidence_level,
+        "adapter": adapter,
+        "adapter_version": adapter_version,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cached_input_tokens,
+        "reported_cost_usd": reported_cost_usd,
+        "raw": raw or {},
+    }
+
+
+def invoke_simulated(prompt: str, system: str | None, model: str | None, context: dict[str, Any]) -> dict[str, Any]:
+    """Offline adapter that replays the 1-shot's reference answer.
+
+    This is for playtesting the pipeline and learning what a good answer looks
+    like without any API key. It is explicitly labelled simulated and can never
+    be benchmark-eligible — it is not a measurement of a real model.
+    """
+    oneshot = context.get("oneshot") or {}
+    answer = oneshot.get("example_answer")
+    response_text = answer if isinstance(answer, str) else f"[simulated response to: {prompt[:60]}]"
+    return make_invocation(
+        response_text=response_text,
+        model=model or "simulated-model",
+        evidence_level="simulated",
+        adapter="simulated",
+        adapter_version="1",
+        raw={"note": "simulated replay of the reference answer", "prompt": prompt, "system": system},
+    )
+
+
+def _run_cli(cmd: list[str], *, timeout: float, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, input=stdin)
+    except subprocess.TimeoutExpired as exc:
+        raise AdapterError(f"{cmd[0]} timed out after {timeout}s") from exc
+    except OSError as exc:
+        raise AdapterUnavailable(f"could not launch {cmd[0]}: {exc}") from exc
+
+
+def invoke_claude_code(prompt: str, system: str | None, model: str | None, context: dict[str, Any]) -> dict[str, Any]:
+    exe = shutil.which("claude")
+    if exe is None:
+        raise AdapterUnavailable("the 'claude' CLI is not on PATH")
+    cmd = [exe, "-p", prompt, "--output-format", "json"]
+    if model:
+        cmd += ["--model", model]
+    if system:
+        cmd += ["--system-prompt", system]
+    completed = _run_cli(cmd, timeout=float(context.get("timeout", 300.0)))
+    if completed.returncode != 0:
+        raise AdapterError((completed.stderr or "claude exited non-zero").strip()[:400])
+    try:
+        obj = json.loads(completed.stdout)
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise AdapterError(f"could not parse claude JSON output: {exc}") from exc
+    if obj.get("is_error"):
+        raise AdapterError(str(obj.get("result") or obj.get("api_error_status") or "claude reported an error")[:400])
+    response_text = obj.get("result")
+    if not isinstance(response_text, str):
+        raise AdapterError("claude output had no 'result' string")
+    usage = obj.get("usage") or {}
+    plain_in = usage.get("input_tokens")
+    cache_read = usage.get("cache_read_input_tokens")
+    cache_create = usage.get("cache_creation_input_tokens")
+    total_input = sum_ints(plain_in, cache_read, cache_create)
+    output_tokens = usage.get("output_tokens")
+    model_usage = obj.get("modelUsage") or {}
+    reported_model = next(iter(model_usage), None) or model
+    cost = obj.get("total_cost_usd")
+    reported_cost = (
+        str(Decimal(str(cost)).quantize(Decimal("0.000001"))) if isinstance(cost, (int, float)) else None
+    )
+    return make_invocation(
+        response_text=response_text,
+        model=base_model_id(reported_model) or reported_model,
+        evidence_level="native_telemetry",
+        adapter="oneshot-claude-code-cli",
+        adapter_version="1",
+        input_tokens=total_input,
+        output_tokens=output_tokens if isinstance(output_tokens, int) else None,
+        cached_input_tokens=cache_read if isinstance(cache_read, int) else None,
+        reported_cost_usd=reported_cost,
+        raw={"usage": usage, "modelUsage": model_usage, "total_cost_usd": cost, "duration_ms": obj.get("duration_ms")},
+    )
+
+
+def invoke_codex(prompt: str, system: str | None, model: str | None, context: dict[str, Any]) -> dict[str, Any]:
+    exe = shutil.which("codex")
+    if exe is None:
+        raise AdapterUnavailable("the 'codex' CLI is not on PATH")
+    full_prompt = f"{system}\n\n{prompt}" if system else prompt
+    work = Path(tempfile.mkdtemp(prefix="oneshot-codex-"))
+    last_message = work / "last_message.txt"
+    cmd = [exe, "exec", "--json", "--skip-git-repo-check", "-C", str(work), "-o", str(last_message)]
+    if model:
+        cmd += ["-m", model]
+    cmd.append(full_prompt)
+    try:
+        completed = _run_cli(cmd, timeout=float(context.get("timeout", 300.0)))
+        if last_message.exists():
+            response_text = last_message.read_text(encoding="utf-8").strip()
+        else:
+            response_text = ""
+        reported_model = model
+        input_tokens = output_tokens = None
+        for line in completed.stdout.splitlines():
+            line = line.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                event = json.loads(line)
+            except (ValueError, json.JSONDecodeError):
+                continue
+            usage = event.get("usage") if isinstance(event.get("usage"), dict) else None
+            if usage is None and isinstance(event.get("info"), dict):
+                usage = event["info"].get("usage") if isinstance(event["info"].get("usage"), dict) else None
+            if usage:
+                input_tokens = usage.get("input_tokens", input_tokens)
+                output_tokens = usage.get("output_tokens", output_tokens)
+            for key in ("model", "model_slug"):
+                if isinstance(event.get(key), str):
+                    reported_model = event[key]
+        if not response_text:
+            raise AdapterError((completed.stderr or "codex produced no final message").strip()[:400])
+        return make_invocation(
+            response_text=response_text,
+            model=base_model_id(reported_model) or reported_model,
+            evidence_level="native_telemetry",
+            adapter="oneshot-codex-cli",
+            adapter_version="1",
+            input_tokens=input_tokens if isinstance(input_tokens, int) else None,
+            output_tokens=output_tokens if isinstance(output_tokens, int) else None,
+            raw={"stderr_tail": (completed.stderr or "")[-400:]},
+        )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def invoke_gemini(prompt: str, system: str | None, model: str | None, context: dict[str, Any]) -> dict[str, Any]:
+    exe = shutil.which("gemini")
+    if exe is None:
+        raise AdapterUnavailable("the 'gemini' CLI is not on PATH")
+    full_prompt = f"{system}\n\n{prompt}" if system else prompt
+    cmd = [exe, "-p", full_prompt]
+    if model:
+        cmd += ["-m", model]
+    completed = _run_cli(cmd, timeout=float(context.get("timeout", 300.0)))
+    text = (completed.stdout or "").strip()
+    if "Please set an Auth method" in text or "GEMINI_API_KEY" in text or (not text and completed.returncode != 0):
+        raise AdapterUnavailable("gemini is not authenticated (set GEMINI_API_KEY or run gemini auth)")
+    if not text:
+        raise AdapterError((completed.stderr or "gemini produced no output").strip()[:400])
+    return make_invocation(
+        response_text=text,
+        model=model,
+        evidence_level="native_telemetry",
+        adapter="oneshot-gemini-cli",
+        adapter_version="1",
+        raw={"stderr_tail": (completed.stderr or "")[-400:]},
+    )
+
+
+def invoke_llm(prompt: str, system: str | None, model: str | None, context: dict[str, Any]) -> dict[str, Any]:
+    exe = shutil.which("llm")
+    if exe is None:
+        raise AdapterUnavailable("the 'llm' CLI is not on PATH")
+    cmd = [exe]
+    if model:
+        cmd += ["-m", model]
+    if system:
+        cmd += ["-s", system]
+    cmd += ["--", prompt]
+    completed = _run_cli(cmd, timeout=float(context.get("timeout", 300.0)))
+    if completed.returncode != 0:
+        message = (completed.stderr or "llm exited non-zero").strip()
+        if "key" in message.lower() or "api" in message.lower():
+            raise AdapterUnavailable(message[:400])
+        raise AdapterError(message[:400])
+    text = (completed.stdout or "").strip()
+    if not text:
+        raise AdapterError("llm produced no output")
+    return make_invocation(
+        response_text=text,
+        model=model,
+        evidence_level="native_telemetry",
+        adapter="oneshot-llm-cli",
+        adapter_version="1",
+        raw={"model": model},
+    )
+
+
+def _http_json(url: str, headers: dict[str, str], payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")
+        raise AdapterError(f"HTTP {exc.code} from {url}: {body[:300]}") from exc
+    except urllib.error.URLError as exc:
+        raise AdapterError(f"network error calling {url}: {exc}") from exc
+
+
+def invoke_anthropic_api(prompt: str, system: str | None, model: str | None, context: dict[str, Any]) -> dict[str, Any]:
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise AdapterUnavailable("ANTHROPIC_API_KEY is not set")
+    model = model or "claude-opus-4-8"
+    payload: dict[str, Any] = {
+        "model": model,
+        "max_tokens": int(context.get("max_tokens", 1024)),
+        "messages": [{"role": "user", "content": prompt}],
+    }
+    if system:
+        payload["system"] = system
+    obj = _http_json(
+        f"{ANTHROPIC_API_BASE_URL}/messages",
+        {"x-api-key": key, "anthropic-version": ANTHROPIC_API_VERSION, "content-type": "application/json"},
+        payload,
+        float(context.get("timeout", 120.0)),
+    )
+    blocks = obj.get("content") or []
+    text = "".join(block.get("text", "") for block in blocks if block.get("type") == "text")
+    usage = obj.get("usage") or {}
+    plain_in = usage.get("input_tokens")
+    cache_read = usage.get("cache_read_input_tokens")
+    cache_create = usage.get("cache_creation_input_tokens")
+    total_input = sum_ints(plain_in, cache_read, cache_create)
+    return make_invocation(
+        response_text=text,
+        model=base_model_id(obj.get("model")) or model,
+        evidence_level="provider_reconciled",
+        adapter="oneshot-anthropic-api",
+        adapter_version=ANTHROPIC_API_VERSION,
+        input_tokens=total_input,
+        output_tokens=usage.get("output_tokens") if isinstance(usage.get("output_tokens"), int) else None,
+        cached_input_tokens=cache_read if isinstance(cache_read, int) else None,
+        raw={"usage": usage, "stop_reason": obj.get("stop_reason")},
+    )
+
+
+def invoke_openai_api(prompt: str, system: str | None, model: str | None, context: dict[str, Any]) -> dict[str, Any]:
+    key = os.environ.get("OPENAI_API_KEY")
+    if not key:
+        raise AdapterUnavailable("OPENAI_API_KEY is not set")
+    model = model or "gpt-4o-mini"
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    obj = _http_json(
+        f"{OPENAI_API_BASE_URL}/chat/completions",
+        {"authorization": f"Bearer {key}", "content-type": "application/json"},
+        {"model": model, "messages": messages},
+        float(context.get("timeout", 120.0)),
+    )
+    choices = obj.get("choices") or []
+    text = ""
+    if choices:
+        text = (choices[0].get("message") or {}).get("content") or ""
+    usage = obj.get("usage") or {}
+    cached = (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+    return make_invocation(
+        response_text=text,
+        model=base_model_id(obj.get("model")) or model,
+        evidence_level="provider_reconciled",
+        adapter="oneshot-openai-api",
+        adapter_version="1",
+        input_tokens=usage.get("prompt_tokens") if isinstance(usage.get("prompt_tokens"), int) else None,
+        output_tokens=usage.get("completion_tokens") if isinstance(usage.get("completion_tokens"), int) else None,
+        cached_input_tokens=cached if isinstance(cached, int) else None,
+        raw={"usage": usage, "finish_reason": choices[0].get("finish_reason") if choices else None},
+    )
+
+
+ADAPTERS: dict[str, dict[str, Any]] = {
+    "sim": {"fn": invoke_simulated, "provider": "simulated", "default_model": None},
+    "claude-code": {"fn": invoke_claude_code, "provider": "anthropic", "default_model": None},
+    "codex": {"fn": invoke_codex, "provider": "openai", "default_model": None},
+    "gemini": {"fn": invoke_gemini, "provider": "google", "default_model": None},
+    "llm": {"fn": invoke_llm, "provider": "unknown", "default_model": "gpt-4o-mini"},
+    "anthropic-api": {"fn": invoke_anthropic_api, "provider": "anthropic", "default_model": "claude-opus-4-8"},
+    "openai-api": {"fn": invoke_openai_api, "provider": "openai", "default_model": "gpt-4o-mini"},
+}
+
+
+def resolve_adapter(name: str) -> dict[str, Any]:
+    spec = ADAPTERS.get(name)
+    if spec is None:
+        raise CliError(f"unknown adapter: {name!r} (choices: {', '.join(sorted(ADAPTERS))})")
+    return spec
+
+
+# --- the runner ------------------------------------------------------------
+
+
+def oneshot_evidence_dir(data_dir: Path) -> Path:
+    return data_dir / "oneshot-evidence"
+
+
+def build_oneshot_usage(invocation: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Translate an Invocation's tokens into a ledger usage block.
+
+    Returns (usage, has_real_usage). For simulated/unavailable evidence the
+    usage stays null with an explanatory reason.
+    """
+    usage = blank_usage()
+    input_tokens = invocation.get("input_tokens")
+    output_tokens = invocation.get("output_tokens")
+    cached = invocation.get("cached_input_tokens")
+    if input_tokens is None and output_tokens is None:
+        return usage, False
+    usage["input_tokens"] = input_tokens
+    usage["output_tokens"] = output_tokens
+    if input_tokens is not None and cached is not None:
+        usage["cached_input_tokens"] = min(cached, input_tokens)
+    usage["tokens_consumed"] = sum_ints(input_tokens, output_tokens)
+    return usage, True
+
+
+def run_oneshot(
+    *,
+    oneshot: dict[str, Any],
+    adapter_name: str,
+    model: str | None,
+    data_dir: Path,
+    client: str | None = None,
+    responder=None,
+    provider_override: str | None = None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Run one 1-shot against one adapter and append a ``run`` record.
+
+    ``responder`` lets tests inject a fake adapter callable without touching the
+    registry. Raises AdapterUnavailable if the channel cannot run at all (no
+    record is written); records an ``incomplete`` run on AdapterError.
+    """
+    if responder is not None:
+        adapter_fn = responder
+        provider = provider_override or "unknown"
+        model_arg = model
+    else:
+        spec = resolve_adapter(adapter_name)
+        adapter_fn = spec["fn"]
+        provider = provider_override or spec["provider"]
+        model_arg = model if model is not None else spec["default_model"]
+
+    call_context = {"oneshot": oneshot}
+    if context:
+        call_context.update(context)
+
+    grader = oneshot["grader"]
+    run_id = new_id("run")
+    started_at = now_utc()
+    start_monotonic = time.perf_counter_ns()
+    invocation: dict[str, Any] | None = None
+    error_detail: str | None = None
+    try:
+        invocation = adapter_fn(oneshot["prompt"], oneshot.get("system"), model_arg, call_context)
+    except AdapterError as exc:
+        error_detail = str(exc)
+    latency_ms = int((time.perf_counter_ns() - start_monotonic) / 1_000_000)
+    finished_at = now_utc()
+
+    if invocation is None:
+        # The adapter ran but failed to produce a usable response.
+        usage = blank_usage()
+        usage["unavailable_reason"] = f"adapter error: {error_detail}"[:300] if error_detail else "adapter error"
+        benchmark = {
+            "oneshot_id": oneshot["id"],
+            "category": oneshot["category"],
+            "adapter": adapter_name,
+            "adapter_version": None,
+            "model_requested": model_arg,
+            "grader": grader["type"],
+            "passed": False,
+            "score": 0.0,
+            "latency_ms": latency_ms,
+            "evidence_level": "unavailable",
+            "simulated": False,
+            "benchmark_eligible": False,
+            "response_sha256": None,
+            "reported_cost_usd": None,
+            "estimated_cost_usd": None,
+            "detail": error_detail,
+        }
+        record = make_record(
+            kind="run",
+            provider=provider,
+            model=model_arg,
+            started_at=started_at,
+            finished_at=finished_at,
+            usage=usage,
+            billing=None,
+            source_type="unavailable",
+            status="incomplete",
+            run_id=run_id,
+            exit_code=None,
+            notes=f"1-shot {oneshot['id']} via {adapter_name}: adapter error",
+            client=client,
+            benchmark=benchmark,
+        )
+        append_ledger(data_dir, [record])
+        return {"record": record, "oneshot": oneshot, "benchmark": benchmark, "response_text": None}
+
+    grade = grade_output(invocation["response_text"], grader)
+    passed = grade["passed"]
+    evidence_level = invocation["evidence_level"]
+    simulated = evidence_level == "simulated"
+    eligible = (evidence_level in BENCHMARK_ELIGIBLE_EVIDENCE_LEVELS) and not simulated
+
+    response_bytes = invocation["response_text"].encode("utf-8")
+    response_sha = sha256_bytes(response_bytes)
+    estimated = estimate_cost_usd(invocation["model"], invocation.get("input_tokens"), invocation.get("output_tokens"))
+
+    if evidence_level in {"simulated", "unavailable"}:
+        usage = blank_usage()
+        usage["unavailable_reason"] = (
+            "simulated model adapter — not real telemetry"
+            if simulated
+            else "usage telemetry was not exposed by this channel"
+        )
+        source_type = "unavailable"
+        source_detail = None
+    else:
+        usage, _ = build_oneshot_usage(invocation)
+        source_type = "native_telemetry"
+        evidence_sha = stable_json_hash(invocation["raw"])
+        source_detail = {
+            "adapter": invocation["adapter"],
+            "adapter_version": invocation["adapter_version"] or "unknown",
+            "evidence_sha256": evidence_sha,
+        }
+
+    benchmark = {
+        "oneshot_id": oneshot["id"],
+        "category": oneshot["category"],
+        "adapter": adapter_name,
+        "adapter_version": invocation["adapter_version"],
+        "model_requested": model_arg,
+        "grader": grader["type"],
+        "passed": passed,
+        "score": grade["score"],
+        "latency_ms": latency_ms,
+        "evidence_level": evidence_level,
+        "simulated": simulated,
+        "benchmark_eligible": eligible,
+        "response_sha256": response_sha,
+        "reported_cost_usd": invocation.get("reported_cost_usd"),
+        "estimated_cost_usd": estimated,
+        "detail": grade["detail"],
+    }
+
+    record = make_record(
+        kind="run",
+        provider=provider,
+        model=invocation["model"],
+        started_at=started_at,
+        finished_at=finished_at,
+        usage=usage,
+        billing=None,
+        source_type=source_type,
+        source_detail=source_detail,
+        status="completed" if passed else "failed",
+        run_id=run_id,
+        exit_code=0 if passed else 1,
+        notes=f"1-shot {oneshot['id']} via {adapter_name}: {'PASS' if passed else 'FAIL'}",
+        client=client,
+        benchmark=benchmark,
+    )
+    append_ledger(data_dir, [record])
+
+    # Persist the raw evidence bundle for human audit (not required for
+    # validation; native_telemetry verification relies on evidence_sha256).
+    try:
+        evidence_dir = oneshot_evidence_dir(data_dir)
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        write_new_json(
+            evidence_dir / f"{run_id}.json",
+            {
+                "run_id": run_id,
+                "oneshot_id": oneshot["id"],
+                "adapter": adapter_name,
+                "model": invocation["model"],
+                "prompt": oneshot["prompt"],
+                "response_text": invocation["response_text"],
+                "grade": grade,
+                "raw": invocation["raw"],
+            },
+        )
+    except OSError:
+        pass
+
+    return {"record": record, "oneshot": oneshot, "benchmark": benchmark, "response_text": invocation["response_text"]}
+
+
+def command_oneshot_list(args: argparse.Namespace) -> int:
+    entries = resolve_oneshots(args)
+    if args.json:
+        print(json.dumps([
+            {k: entry[k] for k in ("id", "title", "category", "difficulty", "tags") if k in entry}
+            for entry in entries
+        ], indent=2))
+        return 0
+    print(f"{len(entries)} 1-shot(s):")
+    for entry in entries:
+        print(f"  {entry['id']:<28} [{entry['category']}/{entry['difficulty']}] {entry['title']}")
+    return 0
+
+
+def command_oneshot_show(args: argparse.Namespace) -> int:
+    entry = get_oneshot(args.id)
+    if args.json:
+        print(json.dumps(entry, indent=2))
+        return 0
+    print(f"id:          {entry['id']}")
+    print(f"title:       {entry['title']}")
+    print(f"category:    {entry['category']} ({entry['difficulty']})")
+    print(f"grader:      {entry['grader']['type']}")
+    if entry.get("system"):
+        print(f"system:      {entry['system']}")
+    print("prompt:")
+    for line in entry["prompt"].splitlines():
+        print(f"  {line}")
+    print("example good answer:")
+    for line in str(entry["example_answer"]).splitlines():
+        print(f"  {line}")
+    print(f"why it matters: {entry['explanation']}")
+    return 0
+
+
+def _benchmark_row(result: dict[str, Any]) -> dict[str, Any]:
+    benchmark = result["benchmark"]
+    record = result["record"]
+    return {
+        "oneshot": benchmark["oneshot_id"],
+        "adapter": benchmark["adapter"],
+        "model": record.get("model"),
+        "passed": benchmark["passed"],
+        "score": benchmark["score"],
+        "latency_ms": benchmark["latency_ms"],
+        "input_tokens": record["usage"].get("input_tokens"),
+        "output_tokens": record["usage"].get("output_tokens"),
+        "reported_cost_usd": benchmark["reported_cost_usd"],
+        "estimated_cost_usd": benchmark["estimated_cost_usd"],
+        "evidence_level": benchmark["evidence_level"],
+        "eligible": benchmark["benchmark_eligible"],
+        "detail": benchmark["detail"],
+    }
+
+
+def command_oneshot_run(args: argparse.Namespace) -> int:
+    oneshot = get_oneshot(args.id)
+    client = resolve_client(args)
+    try:
+        result = run_oneshot(
+            oneshot=oneshot,
+            adapter_name=args.adapter,
+            model=normalize_cli_model(args.model),
+            data_dir=args.data_dir,
+            client=client,
+        )
+    except AdapterUnavailable as exc:
+        print(f"adapter '{args.adapter}' unavailable: {exc}", file=sys.stderr)
+        return 3
+    row = _benchmark_row(result)
+    if args.json:
+        print(json.dumps({"record_id": result["record"]["record_id"], **row, "response_text": result["response_text"]}, indent=2))
+    else:
+        verdict = "PASS" if row["passed"] else "FAIL"
+        print(f"{verdict}  {row['oneshot']}  via {row['adapter']} ({row['model']})")
+        print(f"  score={row['score']:.2f}  latency={row['latency_ms']}ms  evidence={row['evidence_level']}  eligible={row['eligible']}")
+        if row["input_tokens"] is not None or row["output_tokens"] is not None:
+            print(f"  tokens: in={row['input_tokens']} out={row['output_tokens']}")
+        if row["reported_cost_usd"] is not None:
+            print(f"  reported cost: ${row['reported_cost_usd']}")
+        elif row["estimated_cost_usd"] is not None:
+            print(f"  estimated cost: ${row['estimated_cost_usd']} (snapshot {PRICING_SNAPSHOT_DATE})")
+        if row["detail"]:
+            print(f"  detail: {row['detail']}")
+        if result["response_text"] is not None:
+            preview = result["response_text"].strip().replace("\n", " ")
+            print(f"  response: {preview[:200]}")
+    return 0 if row["passed"] else 1
+
+
+def command_oneshot_bench(args: argparse.Namespace) -> int:
+    oneshots = resolve_oneshots(args)
+    adapters = [piece.strip() for piece in args.adapter.split(",") if piece.strip()]
+    if not adapters:
+        raise CliError("bench requires at least one --adapter")
+    client = resolve_client(args)
+    repeat = max(1, int(args.repeat))
+    rows: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    for adapter_name in adapters:
+        for oneshot in oneshots:
+            for _ in range(repeat):
+                try:
+                    result = run_oneshot(
+                        oneshot=oneshot,
+                        adapter_name=adapter_name,
+                        model=normalize_cli_model(args.model),
+                        data_dir=args.data_dir,
+                        client=client,
+                    )
+                except AdapterUnavailable as exc:
+                    skipped.append(f"{adapter_name}: {exc}")
+                    break
+                rows.append(_benchmark_row(result))
+
+    if args.json:
+        print(json.dumps({"results": rows, "skipped": skipped}, indent=2))
+        return 0
+
+    if skipped:
+        for note in skipped:
+            print(f"skipped {note}", file=sys.stderr)
+    if not rows:
+        print("No benchmark runs were executed.")
+        return 1
+
+    header = f"{'oneshot':<28} {'adapter':<14} {'model':<22} {'result':<6} {'score':>5} {'lat(ms)':>8} {'in':>7} {'out':>6} {'cost($)':>10}"
+    print(header)
+    print("-" * len(header))
+    for row in rows:
+        cost = row["reported_cost_usd"] or row["estimated_cost_usd"] or ""
+        cost_str = f"{cost}" if cost == "" else f"{float(cost):.5f}"
+        print(
+            f"{row['oneshot']:<28} {row['adapter']:<14} {str(row['model'] or '')[:22]:<22} "
+            f"{'PASS' if row['passed'] else 'FAIL':<6} {row['score']:>5.2f} {row['latency_ms']:>8} "
+            f"{str(row['input_tokens'] if row['input_tokens'] is not None else ''):>7} "
+            f"{str(row['output_tokens'] if row['output_tokens'] is not None else ''):>6} {cost_str:>10}"
+        )
+
+    # Per-adapter efficiency summary for professionals comparing models.
+    print()
+    by_adapter: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        by_adapter.setdefault(row["adapter"], []).append(row)
+    print(f"{'adapter':<14} {'pass rate':>10} {'avg score':>10} {'avg lat(ms)':>12} {'runs':>6} {'eligible':>9}")
+    for adapter_name, adapter_rows in by_adapter.items():
+        passes = sum(1 for r in adapter_rows if r["passed"])
+        avg_score = sum(r["score"] for r in adapter_rows) / len(adapter_rows)
+        avg_lat = sum(r["latency_ms"] for r in adapter_rows) / len(adapter_rows)
+        eligible = sum(1 for r in adapter_rows if r["eligible"])
+        print(
+            f"{adapter_name:<14} {passes}/{len(adapter_rows):<8} {avg_score:>10.2f} {avg_lat:>12.0f} "
+            f"{len(adapter_rows):>6} {eligible:>9}"
+        )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Record, import, and summarize LLM token usage and cost evidence.",
@@ -3639,6 +4955,52 @@ def build_parser() -> argparse.ArgumentParser:
     verify = sub.add_parser("verify", help="Verify ledger integrity and print a health summary")
     verify.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     verify.set_defaults(func=command_verify)
+
+    oneshot = sub.add_parser(
+        "oneshot",
+        help="Run and benchmark 1-shot tasks against models with deterministic grading",
+    )
+    oneshot_sub = oneshot.add_subparsers(dest="oneshot_command", required=True)
+
+    os_list = oneshot_sub.add_parser("list", help="List the 1-shot library")
+    os_list.add_argument("--category", help="Only list 1-shots in this category")
+    os_list.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    os_list.set_defaults(func=command_oneshot_list)
+
+    os_show = oneshot_sub.add_parser("show", help="Show a 1-shot's prompt, grader, and a good example answer")
+    os_show.add_argument("id", help="The 1-shot id (see 'oneshot list')")
+    os_show.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    os_show.set_defaults(func=command_oneshot_show)
+
+    os_run = oneshot_sub.add_parser("run", help="Run one 1-shot against one model adapter and record it")
+    os_run.add_argument("id", help="The 1-shot id (see 'oneshot list')")
+    os_run.add_argument(
+        "--adapter",
+        default="sim",
+        help=f"Model adapter to use (choices: {', '.join(sorted(ADAPTERS))}); 'sim' replays the reference answer offline",
+    )
+    os_run.add_argument("--model", help="Model id to request from the adapter (adapter default when omitted)")
+    os_run.add_argument("--client", help=CLIENT_ARG_HELP)
+    os_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    os_run.set_defaults(func=command_oneshot_run)
+
+    os_bench = oneshot_sub.add_parser(
+        "bench",
+        help="Run many 1-shots across one or more adapters and print an efficiency comparison",
+    )
+    os_bench.add_argument(
+        "--adapter",
+        default="sim",
+        help="Comma-separated adapters to benchmark (e.g. claude-code,codex)",
+    )
+    os_bench.add_argument("--ids", help="Comma-separated 1-shot ids to run (default: the whole library)")
+    os_bench.add_argument("--category", help="Only run 1-shots in this category")
+    os_bench.add_argument("--all", action="store_true", help="Run the entire library (the default)")
+    os_bench.add_argument("--model", help="Model id to request from every adapter")
+    os_bench.add_argument("--repeat", default=1, help="Run each 1-shot this many times per adapter")
+    os_bench.add_argument("--client", help=CLIENT_ARG_HELP)
+    os_bench.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    os_bench.set_defaults(func=command_oneshot_bench)
     return parser
 
 

@@ -391,11 +391,45 @@ def validate_run_state_time_field(run: dict[str, Any], path: Path, field: str, *
     return parsed
 
 
+def fsync_fileno(fileno: int) -> None:
+    """Best-effort fsync of an open file descriptor.
+
+    Some platforms and filesystems raise ``OSError`` for ``fsync`` on certain
+    file types; the atomic rename/link still provides correctness, so a failed
+    fsync must not abort the write.
+    """
+    try:
+        os.fsync(fileno)
+    except OSError:
+        pass
+
+
+def fsync_directory(path: Path) -> None:
+    """Best-effort fsync of a directory so a contained rename/link is durable.
+
+    Flushing the directory entry is a POSIX concept; on Windows a directory
+    cannot be opened for fsync, so this is a no-op there.
+    """
+    if os.name == "nt":
+        return
+    try:
+        dir_fd = os.open(str(path), os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        fsync_fileno(dir_fd)
+    finally:
+        os.close(dir_fd)
+
+
 def atomic_write_json(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        tmp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        with tmp.open("w", encoding="utf-8") as fh:
+            fh.write(json.dumps(value, indent=2, sort_keys=True) + "\n")
+            fh.flush()
+            fsync_fileno(fh.fileno())
         for attempt in range(10):
             try:
                 tmp.replace(path)
@@ -404,6 +438,7 @@ def atomic_write_json(path: Path, value: Any) -> None:
                 if os.name != "nt" or attempt == 9:
                     raise
                 time.sleep(0.01 * (attempt + 1))
+        fsync_directory(path.parent)
     finally:
         try:
             tmp.unlink()
@@ -422,7 +457,10 @@ def write_new_json(path: Path, value: Any) -> Path:
         try:
             with tmp.open("x", encoding="utf-8") as fh:
                 fh.write(content)
+                fh.flush()
+                fsync_fileno(fh.fileno())
             os.link(tmp, candidate)
+            fsync_directory(candidate.parent)
             return candidate
         except FileExistsError:
             candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
@@ -510,6 +548,8 @@ def append_ledger(data_dir: Path, records: Iterable[dict[str, Any]]) -> int:
                 if run_id is not None:
                     seen_run_ids.add(run_id)
                 count += 1
+            fh.flush()
+            fsync_fileno(fh.fileno())
     return count
 
 

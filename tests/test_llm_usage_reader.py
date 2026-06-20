@@ -7057,6 +7057,35 @@ class LlmUsageReaderTests(unittest.TestCase):
             code = self.run_cli(data_dir, "verify")
             self.assertEqual(code, 2)
 
+    def test_verify_prints_human_readable_report_for_mixed_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            # A manual attestation (openai, excluded from "trusted") plus a
+            # vendor_session_store record (anthropic, trusted) from a Claude Code
+            # transcript, so the health summary spans mixed source types/providers.
+            self._record_sample(data_dir, "2026-06-18T20:00:00Z", "2026-06-18T20:01:00Z")
+            transcript = data_dir / "session.jsonl"
+            transcript.write_text(
+                self._claude_code_assistant_line(uuid="a1", message_id="msg_1") + "\n",
+                encoding="utf-8",
+            )
+            self.assertEqual(self.run_cli(data_dir, "import-claude-code", "--file", str(transcript)), 0)
+
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = self.run_cli(data_dir, "verify")
+            output = buffer.getvalue()
+
+            self.assertEqual(code, 0)
+            self.assertIn("2 record(s) verified", output)
+            self.assertNotIn("Ledger is empty.", output)
+            self.assertIn("Period:", output)
+            # manual_attestation is excluded from trusted; vendor_session_store is trusted.
+            self.assertIn("provider_export=0 manual=1 trusted=1", output)
+            self.assertIn("manual_attestation", output)
+            self.assertIn("vendor_session_store", output)
+            self.assertIn("openai", output)
+            self.assertIn("anthropic", output)
 
     def test_detect_shell_prefers_explicit_override(self) -> None:
         with mock.patch.dict(os.environ, {tool.SHELL_ENV_VAR: "pwsh", "SHELL": "/bin/bash"}, clear=True):

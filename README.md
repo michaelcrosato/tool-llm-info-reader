@@ -20,6 +20,7 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 - Manual token/cost entries, clearly marked as `manual_attestation`.
 - Period summaries by provider and model.
 - Continuous polling of an inbox directory for provider export JSON files.
+- A 1-shot benchmarking layer (`oneshot`) that runs a defined prompt against a real model, grades the answer with a deterministic, program-owned check, and records the run with machine-observed latency and provider-reported usage — so the efficiency numbers are trustworthy and the pass/fail is objective, not self-reported.
 
 Actual per-period billing is only as good as the source. For OpenAI, use the organization Usage and Costs API/dashboard export JSON as the evidence source. Token totals and actual billing are stored separately because cached tokens, service tiers, subscriptions, and credits can make "tokens consumed" different from "actual charged cost".
 
@@ -174,6 +175,68 @@ python .\llm_usage_reader.py show --limit 0
 
 `show` prints the most recent records (oldest first within the window), defaulting to the last 10 (`--limit 10`). A larger `--limit` prints that many of the most recent records, and `--limit 0` prints the entire ledger. The output is the same JSON object stored on each ledger line, so it round-trips and can be piped into `jq` or another tool.
 
+## 1-Shot Benchmarking
+
+The same principle that governs usage collection — *the model never authors its own telemetry* — extends naturally to benchmarking. A **1-shot** is a single-prompt task paired with a deterministic **grader**. The tool sends the prompt to a model, the grader (not the model) decides pass or fail, and the run is recorded with machine-observed latency and provider-reported token usage. The result is a reproducible benchmark whose efficiency numbers you can trust and whose pass/fail is objective.
+
+The library ships with a curated, growing set of 1-shots across common professional situations — extraction, coding (graded by executing the model's code against hidden cases), reasoning/math, classification, instruction-following, and format constraints. Each one teaches by example: it carries a known-good answer and an explanation of what it tests and why.
+
+Browse and learn from the library:
+
+```powershell
+python .\llm_usage_reader.py oneshot list
+python .\llm_usage_reader.py oneshot list --category coding
+python .\llm_usage_reader.py oneshot show code-is-palindrome
+```
+
+`oneshot show` prints the prompt, the grader, a good example answer, and why the task matters — so you can understand quickly what a model is being asked to do and what "good" looks like.
+
+Run one 1-shot against a model. Without any API key you can still **playtest** the whole flow with the offline `sim` adapter, which replays the reference answer (clearly labelled simulated and never benchmark-eligible):
+
+```powershell
+# Offline demo — no key required; shows what a passing answer looks like
+python .\llm_usage_reader.py oneshot run math-multiply --adapter sim
+
+# Against a real model via an authenticated local agent CLI
+python .\llm_usage_reader.py oneshot run math-multiply --adapter claude-code
+python .\llm_usage_reader.py oneshot run code-is-palindrome --adapter codex
+```
+
+Benchmark many 1-shots across one or more model families and print an efficiency comparison for professionals — pass rate, average score, latency, tokens, and cost:
+
+```powershell
+python .\llm_usage_reader.py oneshot bench --adapter claude-code,codex --category coding
+python .\llm_usage_reader.py oneshot bench --adapter claude-code --all --json
+```
+
+### Adapters
+
+An adapter is the channel used to reach a model. Each records whatever trustworthy telemetry that channel exposes; it never fabricates usage.
+
+| Adapter | Family | Channel | Needs |
+| --- | --- | --- | --- |
+| `sim` | — | Offline replay of the reference answer (for playtesting) | nothing |
+| `claude-code` | Anthropic | the `claude` CLI in print mode (`claude -p --output-format json`) | an authenticated `claude` CLI |
+| `codex` | OpenAI | the `codex` CLI (`codex exec --json`) | an authenticated `codex` CLI |
+| `gemini` | Google | the `gemini` CLI | `GEMINI_API_KEY` / `gemini` auth |
+| `llm` | various | Simon Willison's `llm` CLI | `llm` with a configured key |
+| `anthropic-api` | Anthropic | direct Messages API call | `ANTHROPIC_API_KEY` |
+| `openai-api` | OpenAI | direct Chat Completions call | `OPENAI_API_KEY` |
+
+Pick a model with `--model` (e.g. `--adapter anthropic-api --model claude-opus-4-8`); each adapter falls back to its own default when you omit it.
+
+### What gets recorded
+
+Each run is a normal `run` ledger record, so it flows through `summary`, `show`, and `verify` like any other, plus a `benchmark` object (covered by `record_hash`, so it cannot be altered without detection):
+
+- `passed` / `score` from the deterministic grader, and `detail` explaining the verdict. A pass is a `completed` run with exit code `0`; a failure is a `failed` run with exit code `1`.
+- `latency_ms` measured by the recorder with a monotonic clock.
+- `evidence_level` — `native_telemetry` for a real agent-CLI run, `provider_reconciled` for a direct API call, or `simulated`/`unavailable` otherwise.
+- `benchmark_eligible` — only real, measured runs are eligible; simulated and usage-less runs are explicitly excluded from trustworthy comparisons.
+- `reported_cost_usd` (the channel's own cost figure when it provides one, e.g. Claude Code's `total_cost_usd`) is kept separate from the authoritative `billing` block, which stays `unavailable` for runs. `estimated_cost_usd` is a clearly-labelled estimate from a dated pricing snapshot, never treated as actual billing.
+
+Observed token usage and any cost figure are recorded separately, and agent-CLI adapters include the agent's own harness overhead in their token counts — useful when measuring the real cost of *using that tool*, but not a like-for-like comparison of raw model economics (use a direct `*-api` adapter for that). Raw evidence bundles are saved under `data/oneshot-evidence/` for audit.
+
 ## Storage
 
 The default data directory is `data`.
@@ -185,6 +248,7 @@ The default data directory is `data`.
 - `data/imported-files.lock`: process lock used while updating watcher import state.
 - `data/inbox`: optional directory for continuously imported provider export files.
 - `data/openai-exports`: saved raw responses from `fetch-openai`; repeated fetches for the same period use suffixed filenames instead of overwriting prior evidence.
+- `data/oneshot-evidence/*.json`: raw evidence bundles from `oneshot run`/`oneshot bench` (prompt, response, grade, raw adapter output) saved for human audit.
 
 Provider export records are verified against their recorded source file when the ledger is read. Keep imported JSON exports available, or use `fetch-openai` so the tool saves raw OpenAI evidence under `data/openai-exports`.
 
@@ -204,6 +268,7 @@ Each ledger record includes:
 - `billing.actual_cost_usd`
 - `source.type`
 - `record_hash`
+- `benchmark` (only on 1-shot runs): the grader verdict (`passed`, `score`, `detail`), `latency_ms`, `evidence_level`, `benchmark_eligible`, and separate `reported_cost_usd` / `estimated_cost_usd`
 
 Each record also carries a `host` object describing where it ran: machine and OS details, plus a best-effort `host.shell` and an optional `host.client` naming the agent/tool that produced the run. These are covered by `record_hash`, so they cannot be altered without detection.
 

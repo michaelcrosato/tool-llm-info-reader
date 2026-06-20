@@ -29,10 +29,15 @@ from pathlib import Path
 from typing import Any, Iterable, Iterator
 
 
+__version__ = "0.1.0"
 SCHEMA_VERSION = 1
 OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+ANTHROPIC_API_BASE_URL = "https://api.anthropic.com/v1"
+ANTHROPIC_API_VERSION = "2023-06-01"
 OPENAI_USAGE_COMPLETIONS_OBJECT = "organization.usage.completions.result"
 OPENAI_COSTS_OBJECT = "organization.costs.result"
+ANTHROPIC_COST_OBJECT = "anthropic.organization.cost_report.result"
+ANTHROPIC_USAGE_OBJECT = "anthropic.organization.usage_report.messages.result"
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_LEDGER = Path("usage-ledger.jsonl")
 DEFAULT_LOCK = Path("usage-ledger.lock")
@@ -116,6 +121,27 @@ OPENAI_USAGE_METRIC_FIELDS = {
     "num_requests",
 }
 OPENAI_COST_METRIC_FIELDS = {"amount", "quantity"}
+ANTHROPIC_COST_METRIC_FIELDS = {"amount"}
+ANTHROPIC_USAGE_TOKEN_FIELDS = (
+    "uncached_input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation",
+    "output_tokens",
+)
+ANTHROPIC_USAGE_METRIC_FIELDS = {
+    "uncached_input_tokens",
+    "cache_read_input_tokens",
+    "cache_creation",
+    "output_tokens",
+    "server_tool_use",
+}
+PROVIDER_EXPORT_OBJECTS = {
+    ("openai", "provider_usage_bucket"): OPENAI_USAGE_COMPLETIONS_OBJECT,
+    ("openai", "provider_cost_bucket"): OPENAI_COSTS_OBJECT,
+    ("anthropic", "provider_cost_bucket"): ANTHROPIC_COST_OBJECT,
+    ("anthropic", "provider_usage_bucket"): ANTHROPIC_USAGE_OBJECT,
+}
+SUPPORTED_PROVIDER_EXPORT_PROVIDERS = frozenset({"openai", "anthropic"})
 
 
 class CliError(Exception):
@@ -1006,29 +1032,27 @@ def validate_provider_export_kind(record: dict[str, Any], source: dict[str, Any]
     kind = record["kind"]
     provider = record["provider"]
     provider_object = source.get("provider_object")
-    if provider != "openai":
+    if provider not in SUPPORTED_PROVIDER_EXPORT_PROVIDERS:
         raise ledger_record_error(
             path,
             line_no,
-            "field 'provider' must be openai when source.type is provider_export",
+            f"field 'provider' must be one of {sorted(SUPPORTED_PROVIDER_EXPORT_PROVIDERS)} when source.type is provider_export",
         )
-    if kind == "provider_usage_bucket":
-        if provider_object != OPENAI_USAGE_COMPLETIONS_OBJECT:
-            raise ledger_record_error(
-                path,
-                line_no,
-                f"field 'source.provider_object' must be {OPENAI_USAGE_COMPLETIONS_OBJECT} for provider_usage_bucket",
-            )
-        return
-    if kind == "provider_cost_bucket":
-        if provider_object != OPENAI_COSTS_OBJECT:
-            raise ledger_record_error(
-                path,
-                line_no,
-                f"field 'source.provider_object' must be {OPENAI_COSTS_OBJECT} for provider_cost_bucket",
-            )
-        return
-    raise ledger_record_error(path, line_no, "field 'source.type' cannot be provider_export unless kind is a provider bucket")
+    if kind not in {"provider_usage_bucket", "provider_cost_bucket"}:
+        raise ledger_record_error(
+            path, line_no, "field 'source.type' cannot be provider_export unless kind is a provider bucket"
+        )
+    expected_object = PROVIDER_EXPORT_OBJECTS.get((provider, kind))
+    if expected_object is None:
+        raise ledger_record_error(
+            path, line_no, f"provider_export {kind} is not supported for provider {provider!r}"
+        )
+    if provider_object != expected_object:
+        raise ledger_record_error(
+            path,
+            line_no,
+            f"field 'source.provider_object' must be {expected_object} for {provider} {kind}",
+        )
 
 
 def validate_provider_export_payload(
@@ -1871,6 +1895,85 @@ def openai_fetch_params(
     return params
 
 
+def anthropic_admin_url(base_url: str, endpoint: str, params: dict[str, Any]) -> str:
+    query = urllib.parse.urlencode(params, doseq=True)
+    return f"{base_url.rstrip('/')}/{endpoint.lstrip('/')}?{query}"
+
+
+def anthropic_admin_get_json(base_url: str, endpoint: str, params: dict[str, Any], api_key: str) -> Any:
+    request = urllib.request.Request(
+        anthropic_admin_url(base_url, endpoint, params),
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": ANTHROPIC_API_VERSION,
+            "Content-Type": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:500]
+        raise CliError(f"Anthropic Admin API request failed with HTTP {exc.code}: {body}") from exc
+    except urllib.error.URLError as exc:
+        raise CliError(f"Anthropic Admin API request failed: {exc.reason}") from exc
+    try:
+        return json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise CliError("Anthropic Admin API returned invalid JSON") from exc
+
+
+def fetch_anthropic_admin_pages(
+    base_url: str,
+    endpoint: str,
+    params: dict[str, Any],
+    api_key: str,
+) -> dict[str, Any]:
+    page_params = dict(params)
+    buckets: list[Any] = []
+    seen_pages: set[str] = set()
+    while True:
+        payload = anthropic_admin_get_json(base_url, endpoint, page_params, api_key)
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise CliError(f"Anthropic Admin API endpoint {endpoint} returned an unexpected response")
+        buckets.extend(payload["data"])
+        has_more = payload.get("has_more")
+        if not isinstance(has_more, bool):
+            raise CliError(f"Anthropic Admin API endpoint {endpoint} returned a page with non-boolean has_more")
+        if not has_more:
+            if payload.get("next_page") is not None:
+                raise CliError(f"Anthropic Admin API endpoint {endpoint} returned next_page when has_more is false")
+            return {"data": buckets, "has_more": False, "next_page": None}
+        next_page = payload.get("next_page")
+        if not isinstance(next_page, str) or not next_page:
+            raise CliError(f"Anthropic Admin API endpoint {endpoint} set has_more without next_page")
+        if next_page in seen_pages:
+            raise CliError(f"Anthropic Admin API endpoint {endpoint} repeated next_page {next_page!r}")
+        seen_pages.add(next_page)
+        page_params["page"] = next_page
+
+
+def anthropic_fetch_params(
+    start: dt.datetime,
+    end: dt.datetime,
+    bucket_width: str,
+    group_by: list[str] | None = None,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {
+        "starting_at": to_iso(start),
+        "ending_at": to_iso(end),
+        "bucket_width": bucket_width,
+    }
+    if group_by:
+        params["group_by"] = group_by
+    return params
+
+
+def anthropic_export_path(save_dir: Path, kind: str, start: dt.datetime, end: dt.datetime) -> Path:
+    return save_dir / f"anthropic-{kind}-{openai_export_slug(start)}-{openai_export_slug(end)}.json"
+
+
 def provider_import_key(
     provider: str,
     kind: str,
@@ -2144,6 +2247,324 @@ def command_import_openai_costs(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate_anthropic_page_complete(payload: dict[str, Any]) -> list[Any]:
+    data = payload.get("data")
+    if not isinstance(data, list):
+        raise CliError("expected an Anthropic report object with data[] or a raw bucket array")
+    has_more = payload.get("has_more")
+    next_page = payload.get("next_page")
+    if has_more is None:
+        if next_page is not None:
+            raise CliError("Anthropic report object has next_page without has_more")
+        return data
+    if not isinstance(has_more, bool):
+        raise CliError("Anthropic report field 'has_more' must be boolean when present")
+    if has_more:
+        raise CliError("Anthropic report object is incomplete; fetch and import all pages before recording it")
+    if next_page is not None:
+        raise CliError("Anthropic report object has next_page when has_more is false")
+    return data
+
+
+def iter_anthropic_buckets(payload: Any) -> Iterable[dict[str, Any]]:
+    if isinstance(payload, dict) and payload.get("object") == "page":
+        raise CliError("this looks like an OpenAI export; use the import-openai-* commands")
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        yield from validate_anthropic_page_complete(payload)
+        return
+    if isinstance(payload, list):
+        yield from payload
+        return
+    raise CliError("expected an Anthropic report object with data[] or a raw bucket array")
+
+
+def anthropic_bucket_results(bucket: Any) -> list[Any]:
+    if not isinstance(bucket, dict):
+        raise CliError("Anthropic bucket must be an object")
+    results = bucket.get("results")
+    if not isinstance(results, list):
+        raise CliError("Anthropic bucket results must be an array")
+    return results
+
+
+def anthropic_bucket_times(bucket: dict[str, Any]) -> tuple[dt.datetime, dt.datetime]:
+    start = bucket.get("starting_at")
+    end = bucket.get("ending_at")
+    if not isinstance(start, str) or not start.strip():
+        raise CliError("Anthropic bucket field 'starting_at' is required")
+    if not isinstance(end, str) or not end.strip():
+        raise CliError("Anthropic bucket field 'ending_at' is required")
+    start_dt = parse_time(start)
+    end_dt = parse_time(end)
+    if end_dt <= start_dt:
+        raise CliError("Anthropic bucket ending_at must be after starting_at")
+    return start_dt, end_dt
+
+
+def strict_anthropic_cost_amount(result: dict[str, Any]) -> tuple[str, str]:
+    if "amount" not in result or result["amount"] is None:
+        raise CliError("Anthropic cost result field 'amount' is required")
+    amount = result["amount"]
+    if isinstance(amount, bool) or not isinstance(amount, (str, int, float)):
+        raise CliError("Anthropic cost result field 'amount' must be a decimal string of cents")
+    try:
+        cents = Decimal(str(amount))
+    except InvalidOperation as exc:
+        raise CliError("Anthropic cost result field 'amount' must be a decimal string of cents") from exc
+    if not cents.is_finite() or cents < 0:
+        raise CliError("Anthropic cost result field 'amount' must be a non-negative finite decimal")
+    currency = result.get("currency")
+    if not isinstance(currency, str) or not currency.strip():
+        raise CliError("Anthropic cost result field 'currency' must be a non-empty string")
+    if currency.strip().upper() != "USD":
+        raise CliError("Anthropic cost result field 'currency' must be USD")
+    # Anthropic reports the amount in the lowest currency unit (cents); the ledger stores USD.
+    usd = cents / Decimal(100)
+    return format(usd, "f"), "usd"
+
+
+def strict_anthropic_cost_optional_string(result: dict[str, Any], field: str) -> str | None:
+    if field not in result or result[field] is None:
+        return None
+    value = result[field]
+    if not isinstance(value, str) or not value.strip():
+        raise CliError(f"Anthropic cost field {field!r} must be a non-empty string when present")
+    if value != value.strip():
+        raise CliError(f"Anthropic cost field {field!r} must not have leading or trailing whitespace")
+    return value
+
+
+def collect_anthropic_cost_rows(payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for bucket in iter_anthropic_buckets(payload):
+        results = anthropic_bucket_results(bucket)
+        started_at, finished_at = anthropic_bucket_times(bucket)
+        for result in results:
+            if not isinstance(result, dict):
+                raise CliError("Anthropic cost result must be an object")
+            cost, currency = strict_anthropic_cost_amount(result)
+            # Currency is accepted case-insensitively, so canonicalize it before it
+            # feeds the import_key / result_identity hashes; otherwise a corrected
+            # amount whose currency casing also changed would evade conflict detection.
+            identity_result = dict(result)
+            if isinstance(identity_result.get("currency"), str):
+                identity_result["currency"] = identity_result["currency"].strip().upper()
+            rows.append(
+                {
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "result": identity_result,
+                    "cost": cost,
+                    "currency": currency,
+                    "line_item": strict_anthropic_cost_optional_string(result, "description"),
+                }
+            )
+    return rows
+
+
+def build_anthropic_cost_records(path: Path, notes: str | None) -> list[dict[str, Any]]:
+    payload = load_json_file(path)
+    records: list[dict[str, Any]] = []
+    detail = source_file_detail(path)
+    for row in collect_anthropic_cost_rows(payload):
+        started_at = row["started_at"]
+        finished_at = row["finished_at"]
+        result = row["result"]
+        records.append(
+            make_record(
+                kind="provider_cost_bucket",
+                provider="anthropic",
+                model=None,
+                started_at=started_at,
+                finished_at=finished_at,
+                usage=blank_usage(),
+                billing={
+                    "actual_cost_usd": row["cost"],
+                    "currency": row["currency"],
+                    "source": "provider_cost_api",
+                    "line_item": row["line_item"],
+                    "project_id": None,
+                    "api_key_id": None,
+                    "quantity": None,
+                },
+                source_type="provider_export",
+                source_detail={
+                    **detail,
+                    "provider_object": ANTHROPIC_COST_OBJECT,
+                    "import_key": provider_import_key(
+                        "anthropic",
+                        "provider_cost_bucket",
+                        started_at,
+                        finished_at,
+                        result,
+                    ),
+                    "result_identity": provider_result_identity_key(
+                        "anthropic",
+                        "provider_cost_bucket",
+                        started_at,
+                        finished_at,
+                        result,
+                        ANTHROPIC_COST_METRIC_FIELDS,
+                    ),
+                },
+                status="completed",
+                notes=notes,
+            )
+        )
+    return records
+
+
+def command_import_anthropic_costs(args: argparse.Namespace) -> int:
+    records = build_anthropic_cost_records(args.file, args.notes)
+    count = append_ledger(args.data_dir, records)
+    print(json.dumps({"appended": count, "ledger": str(ledger_path(args.data_dir))}, indent=2))
+    return 0
+
+
+def strict_anthropic_usage_int(result: dict[str, Any], field: str) -> int | None:
+    if field not in result or result[field] is None:
+        return None
+    value = result[field]
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise CliError(f"Anthropic usage field {field!r} must be a non-negative integer when present")
+    if value < 0:
+        raise CliError(f"Anthropic usage field {field!r} must be >= 0")
+    return value
+
+
+def anthropic_cache_creation_tokens(result: dict[str, Any]) -> int:
+    cache_creation = result.get("cache_creation")
+    if cache_creation is None:
+        return 0
+    if not isinstance(cache_creation, dict):
+        raise CliError("Anthropic usage field 'cache_creation' must be an object when present")
+    total = 0
+    for field in ("ephemeral_1h_input_tokens", "ephemeral_5m_input_tokens"):
+        value = cache_creation.get(field)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise CliError(
+                f"Anthropic usage field 'cache_creation.{field}' must be a non-negative integer when present"
+            )
+        total += value
+    return total
+
+
+def normalize_anthropic_usage_result(result: dict[str, Any]) -> dict[str, Any]:
+    uncached = strict_anthropic_usage_int(result, "uncached_input_tokens") or 0
+    cache_read = strict_anthropic_usage_int(result, "cache_read_input_tokens") or 0
+    cache_creation = anthropic_cache_creation_tokens(result)
+    output_tokens = strict_anthropic_usage_int(result, "output_tokens") or 0
+    # Anthropic reports input token categories as disjoint counts (uncached, cache
+    # read, and cache creation). The ledger's input_tokens is the total input, and
+    # cached_input_tokens is the cache-read subset; the per-category breakdown is
+    # preserved in the retained raw export.
+    input_tokens = uncached + cache_read + cache_creation
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cache_read,
+        "input_audio_tokens": None,
+        "output_audio_tokens": None,
+        "billed_tokens": None,
+        "requests": None,
+        "tokens_consumed": sum_ints(input_tokens, output_tokens),
+    }
+
+
+def strict_anthropic_model(result: dict[str, Any]) -> str | None:
+    if "model" not in result or result["model"] is None:
+        return None
+    model = result["model"]
+    if not isinstance(model, str) or not model.strip():
+        raise CliError("Anthropic usage field 'model' must be a non-empty string when present")
+    if model != model.strip():
+        raise CliError("Anthropic usage field 'model' must not have leading or trailing whitespace")
+    return model
+
+
+def collect_anthropic_usage_rows(payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    saw_cost = False
+    for bucket in iter_anthropic_buckets(payload):
+        results = anthropic_bucket_results(bucket)
+        started_at, finished_at = anthropic_bucket_times(bucket)
+        for result in results:
+            if not isinstance(result, dict):
+                raise CliError("Anthropic usage result must be an object")
+            has_tokens = any(field in result for field in ANTHROPIC_USAGE_TOKEN_FIELDS)
+            if not has_tokens:
+                if "amount" in result:
+                    saw_cost = True
+                    continue
+                raise CliError("Anthropic usage result missing token fields")
+            rows.append(
+                {
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                    "result": result,
+                    "usage": normalize_anthropic_usage_result(result),
+                    "model": strict_anthropic_model(result),
+                }
+            )
+    if not rows and saw_cost:
+        raise CliError("Anthropic usage import found only cost results; use import-anthropic-costs")
+    return rows
+
+
+def build_anthropic_usage_records(path: Path, default_model: str | None, notes: str | None) -> list[dict[str, Any]]:
+    payload = load_json_file(path)
+    records: list[dict[str, Any]] = []
+    detail = source_file_detail(path)
+    for row in collect_anthropic_usage_rows(payload):
+        started_at = row["started_at"]
+        finished_at = row["finished_at"]
+        result = row["result"]
+        records.append(
+            make_record(
+                kind="provider_usage_bucket",
+                provider="anthropic",
+                model=row["model"] or default_model,
+                started_at=started_at,
+                finished_at=finished_at,
+                usage=row["usage"],
+                billing=None,
+                source_type="provider_export",
+                source_detail={
+                    **detail,
+                    "provider_object": ANTHROPIC_USAGE_OBJECT,
+                    "import_key": provider_import_key(
+                        "anthropic",
+                        "provider_usage_bucket",
+                        started_at,
+                        finished_at,
+                        result,
+                    ),
+                    "result_identity": provider_result_identity_key(
+                        "anthropic",
+                        "provider_usage_bucket",
+                        started_at,
+                        finished_at,
+                        result,
+                        ANTHROPIC_USAGE_METRIC_FIELDS,
+                    ),
+                },
+                status="completed",
+                notes=notes,
+            )
+        )
+    return records
+
+
+def command_import_anthropic_usage(args: argparse.Namespace) -> int:
+    default_model = normalize_cli_model(args.default_model)
+    records = build_anthropic_usage_records(args.file, default_model, args.notes)
+    count = append_ledger(args.data_dir, records)
+    print(json.dumps({"appended": count, "ledger": str(ledger_path(args.data_dir))}, indent=2))
+    return 0
+
+
 def command_fetch_openai(args: argparse.Namespace) -> int:
     start = parse_time(args.from_time)
     end = parse_time(args.to)
@@ -2195,6 +2616,76 @@ def command_fetch_openai(args: argparse.Namespace) -> int:
     if "costs" in payloads:
         costs_path = write_new_json(openai_export_path(save_dir, "costs", start, end), payloads["costs"])
         records.extend(build_openai_cost_records(costs_path, args.notes))
+        exports["costs_export"] = str(costs_path)
+
+    count = append_ledger(args.data_dir, records)
+    print(
+        json.dumps(
+            {
+                "appended": count,
+                "fetched_records": len(records),
+                "ledger": str(ledger_path(args.data_dir)),
+                **exports,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def command_fetch_anthropic(args: argparse.Namespace) -> int:
+    start = parse_time(args.from_time)
+    end = parse_time(args.to)
+    if end <= start:
+        raise CliError("--to must be after --from")
+    bucket_width = args.bucket_width.strip()
+    if not bucket_width:
+        raise CliError("--bucket-width must be a non-empty string")
+    api_key_env = args.api_key_env.strip()
+    if not api_key_env:
+        raise CliError("--api-key-env must be a non-empty environment variable name")
+    default_model = normalize_cli_model(args.default_model)
+    api_key = os.environ.get(api_key_env)
+    if not api_key:
+        raise CliError(f"environment variable {api_key_env} is not set")
+
+    save_dir = args.save_dir or (args.data_dir / "anthropic-exports")
+    payloads: dict[str, Any] = {}
+    records: list[dict[str, Any]] = []
+    exports: dict[str, str] = {}
+
+    if args.kind in {"usage", "both"}:
+        group_by = ["model"] if args.group_by_model else None
+        payloads["usage"] = fetch_anthropic_admin_pages(
+            args.base_url,
+            "/organizations/usage_report/messages",
+            anthropic_fetch_params(start, end, bucket_width, group_by),
+            api_key,
+        )
+
+    if args.kind in {"costs", "both"}:
+        # The Anthropic Cost Report only supports a daily bucket width.
+        payloads["costs"] = fetch_anthropic_admin_pages(
+            args.base_url,
+            "/organizations/cost_report",
+            anthropic_fetch_params(start, end, "1d", ["description"]),
+            api_key,
+        )
+
+    if "usage" in payloads:
+        collect_anthropic_usage_rows(payloads["usage"])
+    if "costs" in payloads:
+        collect_anthropic_cost_rows(payloads["costs"])
+
+    if "usage" in payloads:
+        usage_path = write_new_json(anthropic_export_path(save_dir, "usage", start, end), payloads["usage"])
+        records.extend(build_anthropic_usage_records(usage_path, default_model, args.notes))
+        exports["usage_export"] = str(usage_path)
+
+    if "costs" in payloads:
+        costs_path = write_new_json(anthropic_export_path(save_dir, "costs", start, end), payloads["costs"])
+        records.extend(build_anthropic_cost_records(costs_path, args.notes))
         exports["costs_export"] = str(costs_path)
 
     count = append_ledger(args.data_dir, records)
@@ -2514,6 +3005,69 @@ def save_imported_state(data_dir: Path, state: dict[str, Any]) -> None:
 
 def classify_provider_export(payload: Any) -> str | None:
     try:
+        openai_kind = classify_openai_export(payload)
+    except CliError:
+        # An object=="page" payload that fails OpenAI validation is definitively an
+        # OpenAI export problem (incomplete page, etc.), so re-raise. Otherwise the
+        # OpenAI path simply does not recognize this shape; fall through to Anthropic.
+        if isinstance(payload, dict) and payload.get("object") == "page":
+            raise
+        openai_kind = None
+    if openai_kind is not None:
+        return openai_kind
+    return classify_anthropic_export(payload)
+
+
+def classify_anthropic_export(payload: Any) -> str | None:
+    is_report_shape = isinstance(payload, list) or (
+        isinstance(payload, dict)
+        and payload.get("object") != "page"
+        and isinstance(payload.get("data"), list)
+    )
+    if not is_report_shape:
+        return None
+    # An incomplete/paginated Anthropic report raises here (mirroring the OpenAI page
+    # behavior) so the watcher flags it instead of silently skipping a partial export.
+    buckets = list(iter_anthropic_buckets(payload))
+    saw_cost = False
+    saw_usage = False
+    saw_other = False
+    saw_shape = False
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        if not (isinstance(bucket.get("starting_at"), str) and isinstance(bucket.get("ending_at"), str)):
+            continue
+        results = bucket.get("results")
+        if not isinstance(results, list):
+            continue
+        saw_shape = True
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            if any(field in result for field in ANTHROPIC_USAGE_TOKEN_FIELDS):
+                saw_usage = True
+            elif "amount" in result:
+                saw_cost = True
+            else:
+                saw_other = True
+    if saw_other or (saw_cost and saw_usage):
+        return None
+    if saw_cost:
+        return "anthropic_costs"
+    if saw_usage:
+        return "anthropic_usage"
+    # A valid report shape with no importable rows (no buckets, or well-formed buckets
+    # whose results are empty) is an empty export; mark it handled so watch stops
+    # rescanning it. Reject content that merely has a data[] of non-bucket junk.
+    data_is_empty = isinstance(payload, dict) and payload.get("data") == []
+    if saw_shape or data_is_empty:
+        return "anthropic_empty"
+    return None
+
+
+def classify_openai_export(payload: Any) -> str | None:
+    try:
         buckets = list(iter_openai_buckets(payload))
     except CliError:
         if isinstance(payload, dict) and payload.get("object") == "page":
@@ -2554,13 +3108,17 @@ def import_file_by_type(data_dir: Path, path: Path, notes: str | None = None) ->
     kind = classify_provider_export(payload)
     if kind is None:
         return False, 0
-    if kind == "openai_empty":
+    if kind in {"openai_empty", "anthropic_empty"}:
         return True, 0
     records: list[dict[str, Any]] = []
     if kind in {"openai_usage", "mixed"}:
         records.extend(build_openai_usage_records(path, None, notes))
     if kind in {"openai_costs", "mixed"}:
         records.extend(build_openai_cost_records(path, notes))
+    if kind == "anthropic_costs":
+        records.extend(build_anthropic_cost_records(path, notes))
+    if kind == "anthropic_usage":
+        records.extend(build_anthropic_usage_records(path, None, notes))
     count = append_ledger(data_dir, records)
     return True, count
 
@@ -2699,6 +3257,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Record, import, and summarize LLM token usage and cost evidence.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--data-dir",
         type=Path,
@@ -2764,6 +3323,25 @@ def build_parser() -> argparse.ArgumentParser:
     imp_costs.add_argument("--notes", help="Free-form note")
     imp_costs.set_defaults(func=command_import_openai_costs)
 
+    imp_anthropic_costs = sub.add_parser(
+        "import-anthropic-costs",
+        help="Import an Anthropic organization Cost Report JSON response/export",
+    )
+    imp_anthropic_costs.add_argument("--file", required=True, type=Path)
+    imp_anthropic_costs.add_argument("--notes", help="Free-form note")
+    imp_anthropic_costs.set_defaults(func=command_import_anthropic_costs)
+
+    imp_anthropic_usage = sub.add_parser(
+        "import-anthropic-usage",
+        help="Import an Anthropic organization Messages Usage Report JSON response/export",
+    )
+    imp_anthropic_usage.add_argument("--file", required=True, type=Path)
+    imp_anthropic_usage.add_argument(
+        "--default-model", help="Model name to use when the export was not grouped by model"
+    )
+    imp_anthropic_usage.add_argument("--notes", help="Free-form note")
+    imp_anthropic_usage.set_defaults(func=command_import_anthropic_usage)
+
     fetch_openai = sub.add_parser("fetch-openai", help="Fetch OpenAI Admin usage/costs for a period and import them")
     fetch_openai.add_argument("--from", dest="from_time", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD")
     fetch_openai.add_argument("--to", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD")
@@ -2785,6 +3363,34 @@ def build_parser() -> argparse.ArgumentParser:
     fetch_openai.add_argument("--save-dir", type=Path, help="Directory for saved raw OpenAI JSON responses")
     fetch_openai.add_argument("--notes", help="Free-form note applied to imported records")
     fetch_openai.set_defaults(func=command_fetch_openai, group_by_model=True)
+
+    fetch_anthropic = sub.add_parser(
+        "fetch-anthropic", help="Fetch Anthropic Admin usage/costs for a period and import them"
+    )
+    fetch_anthropic.add_argument(
+        "--from", dest="from_time", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD"
+    )
+    fetch_anthropic.add_argument("--to", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD")
+    fetch_anthropic.add_argument("--kind", choices=["usage", "costs", "both"], default="both")
+    fetch_anthropic.add_argument(
+        "--bucket-width", default="1d", help="Usage bucket width, e.g. 1d, 1h, 1m (the cost report is always 1d)"
+    )
+    fetch_anthropic.add_argument("--default-model", help="Model name to use when usage is not grouped by model")
+    fetch_anthropic.add_argument(
+        "--no-group-by-model",
+        dest="group_by_model",
+        action="store_false",
+        help="Fetch usage without group_by=model",
+    )
+    fetch_anthropic.add_argument(
+        "--api-key-env",
+        default="ANTHROPIC_ADMIN_KEY",
+        help="Environment variable containing an Anthropic Admin API key",
+    )
+    fetch_anthropic.add_argument("--base-url", default=ANTHROPIC_API_BASE_URL, help=argparse.SUPPRESS)
+    fetch_anthropic.add_argument("--save-dir", type=Path, help="Directory for saved raw Anthropic JSON responses")
+    fetch_anthropic.add_argument("--notes", help="Free-form note applied to imported records")
+    fetch_anthropic.set_defaults(func=command_fetch_anthropic, group_by_model=True)
 
     summary = sub.add_parser("summary", help="Summarize records over a time period")
     summary.add_argument("--from", dest="from_time", help="UTC ISO time, epoch seconds, YYYY-MM-DD, or now")

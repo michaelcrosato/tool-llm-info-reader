@@ -10,6 +10,8 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 - The agent/tool that produced a run (for example `claude-desktop`, `grok-cli`, `codex`, or `antigravity`) and a best-effort shell name, captured under `host.client` and `host.shell`.
 - Imported OpenAI organization completions usage buckets, including model name when the export was grouped by model.
 - Imported OpenAI organization cost buckets.
+- Imported Anthropic organization Cost Report buckets (the per-bucket amounts, reported in cents, are converted to USD).
+- Imported Anthropic organization Messages Usage Report buckets, including model name when the export was grouped by model.
 - Direct OpenAI Admin API usage/cost fetches for a requested period when `OPENAI_ADMIN_KEY` is available.
 - Idempotent OpenAI imports that skip previously imported bucket rows.
 - Conflict detection for corrected OpenAI bucket rows so repeated imports do not double-count changed token or cost values.
@@ -20,12 +22,31 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 
 Actual per-period billing is only as good as the source. For OpenAI, use the organization Usage and Costs API/dashboard export JSON as the evidence source. Token totals and actual billing are stored separately because cached tokens, service tiers, subscriptions, and credits can make "tokens consumed" different from "actual charged cost".
 
+## Install
+
+The tool is a single dependency-free module, so you can run it directly from a checkout:
+
+```powershell
+python .\llm_usage_reader.py --help
+```
+
+Or install it to get the `llm-usage-reader` console command on your PATH:
+
+```powershell
+pip install .
+llm-usage-reader --help
+llm-usage-reader --version
+```
+
+Installing requires Python 3.10 or newer. The examples below use `python .\llm_usage_reader.py`; once installed, `llm-usage-reader` is equivalent.
+
 ## Quick Start
 
 Show help:
 
 ```powershell
 python .\llm_usage_reader.py --help
+python .\llm_usage_reader.py --version
 ```
 
 Record one manual run:
@@ -75,6 +96,15 @@ python .\llm_usage_reader.py import-openai-costs --file .\samples\openai_costs_r
 
 Use the matching import command for the export family; a cost-only export passed to `import-openai-usage`, or a usage-only export passed to `import-openai-costs`, is rejected rather than treated as an empty import.
 `import-openai-usage` supports `organization.usage.completions.result` rows. Other OpenAI usage result families, such as image, audio, vector store, or file-search usage, are rejected until the ledger has fields for their native units.
+
+Import Anthropic organization Cost Report and Messages Usage Report JSON responses/exports:
+
+```powershell
+python .\llm_usage_reader.py import-anthropic-costs --file .\samples\anthropic_costs_response.json
+python .\llm_usage_reader.py import-anthropic-usage --file .\samples\anthropic_usage_response.json
+```
+
+Anthropic reports cost amounts in the lowest currency unit (cents); they are converted to USD when stored. For usage, Anthropic reports input token categories as disjoint counts (uncached, cache-read, and cache-creation); these are summed into the ledger's `usage.input_tokens`, with `usage.cached_input_tokens` set to the cache-read portion. The per-category breakdown is preserved in the retained raw export. Imports are idempotent and conflict-checked the same way as OpenAI imports.
 Paginated OpenAI API pages must be complete before import. A page that still reports `has_more: true`, or a final page that still carries `next_page`, is rejected to avoid recording partial usage or cost evidence.
 
 Fetch OpenAI organization usage and costs directly when an admin key is present:
@@ -85,6 +115,15 @@ python .\llm_usage_reader.py fetch-openai --from 2026-06-18 --to 2026-06-19
 ```
 
 `fetch-openai` saves the raw OpenAI responses under `data/openai-exports` and then imports those saved files through the same validation path as manual exports. Usage is grouped by model by default so period summaries include model names when OpenAI returns them.
+
+Fetch Anthropic organization usage and costs directly when an Admin API key is present:
+
+```powershell
+$env:ANTHROPIC_ADMIN_KEY = "sk-ant-admin-..."
+python .\llm_usage_reader.py fetch-anthropic --from 2026-06-18 --to 2026-06-19
+```
+
+`fetch-anthropic` calls the Anthropic Admin Usage and Cost Report endpoints (authenticating with the `x-api-key` header), saves the raw responses under `data/anthropic-exports`, and imports them through the same validation path. The cost report is always daily; `--bucket-width` applies to the usage report only.
 
 Summarize a period:
 
@@ -109,6 +148,8 @@ Run a 24/7-style local collector that imports any new JSON exports copied into `
 ```powershell
 python .\llm_usage_reader.py watch --inbox .\data\inbox --interval 300
 ```
+
+The watcher recognizes OpenAI usage/cost exports and Anthropic Cost Report and Messages Usage Report exports; unrecognized files are left in place and skipped.
 
 ## Storage
 

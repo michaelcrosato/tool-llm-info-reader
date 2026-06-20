@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-usage-reader"
+description = "Local CLI for recording and summarizing LLM token usage and cost evidence."
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["version"]
+authors = [{ name = "Michael Crosato" }]
+keywords = ["llm", "usage", "cost", "tokens", "openai", "cli", "evidence"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Topic :: Utilities",
+]
+
+[project.scripts]
+llm-usage-reader = "llm_usage_reader:main"
+
+[project.urls]
+Homepage = "https://github.com/michaelcrosato/tool-llm-info-reader"
+Repository = "https://github.com/michaelcrosato/tool-llm-info-reader"
+
+[tool.setuptools]
+py-modules = ["llm_usage_reader"]
+
+[tool.setuptools.dynamic]
+version = { attr = "llm_usage_reader.__version__" }

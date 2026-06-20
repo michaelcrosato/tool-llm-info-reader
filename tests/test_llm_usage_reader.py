@@ -7317,5 +7317,517 @@ class LlmUsageReaderTests(unittest.TestCase):
                 self.assertEqual(record["record_hash"], tool.record_hash(record))
 
 
+    def _anthropic_costs_payload(self, *amounts: str) -> dict[str, object]:
+        descriptions = ["Claude Opus 4 Usage - Input Tokens", "Claude Opus 4 Usage - Output Tokens"]
+        token_types = ["uncached_input_tokens", "output_tokens"]
+        results = []
+        for index, amount in enumerate(amounts):
+            results.append(
+                {
+                    "amount": amount,
+                    "context_window": "0-200k",
+                    "cost_type": "tokens",
+                    "currency": "USD",
+                    "description": descriptions[index % len(descriptions)],
+                    "model": "claude-opus-4-6",
+                    "service_tier": "standard",
+                    "token_type": token_types[index % len(token_types)],
+                    "workspace_id": "wrkspc_01JwQvzr7rXLA5AGx3HKfFUJ",
+                }
+            )
+        return {
+            "data": [
+                {
+                    "starting_at": "2026-06-18T00:00:00Z",
+                    "ending_at": "2026-06-19T00:00:00Z",
+                    "results": results,
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+
+    def test_import_anthropic_costs_records_usd_and_line_item(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "anthropic-costs.json"
+            sample.write_text(json.dumps(self._anthropic_costs_payload("123.78912", "45.5")), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample)), 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 2)
+            by_line_item = {r["billing"]["line_item"]: r for r in records}
+            input_row = by_line_item["Claude Opus 4 Usage - Input Tokens"]
+            output_row = by_line_item["Claude Opus 4 Usage - Output Tokens"]
+            for record in records:
+                self.assertEqual(record["provider"], "anthropic")
+                self.assertEqual(record["kind"], "provider_cost_bucket")
+                self.assertIsNone(record["model"])
+                self.assertEqual(record["billing"]["source"], "provider_cost_api")
+                self.assertEqual(record["billing"]["currency"], "usd")
+            # Amounts are reported in cents and stored as USD.
+            self.assertEqual(input_row["billing"]["actual_cost_usd"], "1.2378912")
+            self.assertEqual(output_row["billing"]["actual_cost_usd"], "0.455")
+
+    def test_import_anthropic_costs_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "anthropic-costs.json"
+            sample.write_text(json.dumps(self._anthropic_costs_payload("100", "50")), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample)), 0)
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample)), 0)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 2)
+
+    def test_import_anthropic_costs_rejects_corrected_amount_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            first = root / "first.json"
+            corrected = root / "corrected.json"
+            first.write_text(json.dumps(self._anthropic_costs_payload("100")), encoding="utf-8")
+            corrected.write_text(json.dumps(self._anthropic_costs_payload("250")), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(first)), 0)
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(corrected))
+
+            self.assertEqual(code, 2)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["billing"]["actual_cost_usd"], "1")
+
+    def test_import_anthropic_costs_rejects_incomplete_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "incomplete.json"
+            payload = self._anthropic_costs_payload("100")
+            payload["has_more"] = True
+            payload["next_page"] = "2026-06-19T00:00:00Z"
+            sample.write_text(json.dumps(payload), encoding="utf-8")
+
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_import_anthropic_costs_rejects_openai_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "openai.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.costs.result",
+                                        "amount": {"value": 0.06, "currency": "usd"},
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_import_anthropic_costs_rejects_non_usd_currency(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "eur.json"
+            payload = self._anthropic_costs_payload("100")
+            payload["data"][0]["results"][0]["currency"] = "EUR"
+            sample.write_text(json.dumps(payload), encoding="utf-8")
+
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_import_anthropic_costs_rejects_missing_amount(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "noamount.json"
+            payload = self._anthropic_costs_payload("100")
+            del payload["data"][0]["results"][0]["amount"]
+            sample.write_text(json.dumps(payload), encoding="utf-8")
+
+            code = self.run_cli(data_dir, "import-anthropic-costs", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_classify_anthropic_costs_export(self) -> None:
+        payload = self._anthropic_costs_payload("100", "50")
+        self.assertEqual(tool.classify_provider_export(payload), "anthropic_costs")
+
+    def test_classify_minimal_anthropic_usage_shape(self) -> None:
+        # A usage row without a cache_creation object still classifies as usage, not cost.
+        usage_payload = {
+            "data": [
+                {
+                    "starting_at": "2026-06-18T00:00:00Z",
+                    "ending_at": "2026-06-19T00:00:00Z",
+                    "results": [
+                        {
+                            "uncached_input_tokens": 1500,
+                            "output_tokens": 500,
+                            "cache_read_input_tokens": 200,
+                            "model": "claude-opus-4-6",
+                        }
+                    ],
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+        self.assertEqual(tool.classify_provider_export(usage_payload), "anthropic_usage")
+
+    def test_classify_openai_costs_still_detected(self) -> None:
+        openai_payload = {
+            "object": "page",
+            "data": [
+                {
+                    "object": "bucket",
+                    "start_time": 1781740800,
+                    "end_time": 1781827200,
+                    "results": [
+                        {
+                            "object": "organization.costs.result",
+                            "amount": {"value": 0.06, "currency": "usd"},
+                        }
+                    ],
+                }
+            ],
+        }
+        self.assertEqual(tool.classify_provider_export(openai_payload), "openai_costs")
+
+    def test_watch_imports_anthropic_costs_from_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "anthropic-costs.json").write_text(
+                json.dumps(self._anthropic_costs_payload("123.78912", "45.5")), encoding="utf-8"
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+            self.assertEqual(tool.scan_inbox_once(args), 2)
+            self.assertEqual(tool.scan_inbox_once(args), 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 2)
+            self.assertTrue(all(r["provider"] == "anthropic" for r in records))
+
+    def _anthropic_usage_payload(
+        self,
+        *,
+        uncached: int = 1500,
+        cache_read: int = 200,
+        cache_1h: int = 1000,
+        cache_5m: int = 500,
+        output: int = 500,
+        model: object = "claude-opus-4-6",
+    ) -> dict[str, object]:
+        result: dict[str, object] = {
+            "uncached_input_tokens": uncached,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation": {
+                "ephemeral_1h_input_tokens": cache_1h,
+                "ephemeral_5m_input_tokens": cache_5m,
+            },
+            "output_tokens": output,
+            "context_window": "0-200k",
+            "service_tier": "standard",
+        }
+        if model is not None:
+            result["model"] = model
+        return {
+            "data": [
+                {
+                    "starting_at": "2026-06-18T00:00:00Z",
+                    "ending_at": "2026-06-19T00:00:00Z",
+                    "results": [result],
+                }
+            ],
+            "has_more": False,
+            "next_page": None,
+        }
+
+    def test_import_anthropic_usage_sums_disjoint_input_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "usage.json"
+            sample.write_text(json.dumps(self._anthropic_usage_payload()), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-usage", "--file", str(sample)), 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            record = records[0]
+            self.assertEqual(record["provider"], "anthropic")
+            self.assertEqual(record["kind"], "provider_usage_bucket")
+            self.assertEqual(record["model"], "claude-opus-4-6")
+            usage = record["usage"]
+            # input_tokens = uncached(1500) + cache_read(200) + cache_creation(1000+500) = 3200
+            self.assertEqual(usage["input_tokens"], 3200)
+            self.assertEqual(usage["cached_input_tokens"], 200)
+            self.assertEqual(usage["output_tokens"], 500)
+            self.assertEqual(usage["tokens_consumed"], 3700)
+
+    def test_import_anthropic_usage_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "usage.json"
+            sample.write_text(json.dumps(self._anthropic_usage_payload()), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-usage", "--file", str(sample)), 0)
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-usage", "--file", str(sample)), 0)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 1)
+
+    def test_import_anthropic_usage_rejects_corrected_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            first = root / "first.json"
+            corrected = root / "corrected.json"
+            first.write_text(json.dumps(self._anthropic_usage_payload(output=500)), encoding="utf-8")
+            corrected.write_text(json.dumps(self._anthropic_usage_payload(output=999)), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-usage", "--file", str(first)), 0)
+            code = self.run_cli(data_dir, "import-anthropic-usage", "--file", str(corrected))
+            self.assertEqual(code, 2)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["usage"]["output_tokens"], 500)
+
+    def test_import_anthropic_usage_applies_default_model(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "usage.json"
+            sample.write_text(json.dumps(self._anthropic_usage_payload(model=None)), encoding="utf-8")
+
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "import-anthropic-usage",
+                    "--file",
+                    str(sample),
+                    "--default-model",
+                    "claude-sonnet-4-6",
+                ),
+                0,
+            )
+            self.assertEqual(tool.read_ledger(data_dir)[0]["model"], "claude-sonnet-4-6")
+
+    def test_import_anthropic_usage_rejects_cost_export(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            sample = root / "costs.json"
+            sample.write_text(json.dumps(self._anthropic_costs_payload("100")), encoding="utf-8")
+
+            code = self.run_cli(data_dir, "import-anthropic-usage", "--file", str(sample))
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_classify_anthropic_usage_export(self) -> None:
+        self.assertEqual(tool.classify_provider_export(self._anthropic_usage_payload()), "anthropic_usage")
+
+    def test_watch_imports_anthropic_usage_from_inbox(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "anthropic-usage.json").write_text(
+                json.dumps(self._anthropic_usage_payload()), encoding="utf-8"
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+            self.assertEqual(tool.scan_inbox_once(args), 1)
+            self.assertEqual(tool.scan_inbox_once(args), 0)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["provider"], "anthropic")
+            self.assertEqual(records[0]["kind"], "provider_usage_bucket")
+
+    def test_import_anthropic_costs_conflict_survives_currency_casing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            first = root / "first.json"
+            corrected = root / "corrected.json"
+            usd = self._anthropic_costs_payload("100")
+            corrected_payload = self._anthropic_costs_payload("250")
+            corrected_payload["data"][0]["results"][0]["currency"] = "usd"
+            first.write_text(json.dumps(usd), encoding="utf-8")
+            corrected.write_text(json.dumps(corrected_payload), encoding="utf-8")
+
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(first)), 0)
+            # The corrected amount must conflict even though the currency casing differs.
+            self.assertEqual(self.run_cli(data_dir, "import-anthropic-costs", "--file", str(corrected)), 2)
+            records = tool.read_ledger(data_dir)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["billing"]["actual_cost_usd"], "1")
+
+    def test_classify_anthropic_usage_raw_array(self) -> None:
+        raw_array = self._anthropic_usage_payload()["data"]
+        self.assertEqual(tool.classify_provider_export(raw_array), "anthropic_usage")
+
+    def test_watch_imports_anthropic_usage_raw_array(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            inbox = root / "inbox"
+            inbox.mkdir()
+            (inbox / "raw.json").write_text(
+                json.dumps(self._anthropic_usage_payload()["data"]), encoding="utf-8"
+            )
+            args = type("Args", (), {"data_dir": data_dir, "inbox": inbox, "notes": None})()
+            self.assertEqual(tool.scan_inbox_once(args), 1)
+            self.assertEqual(tool.read_ledger(data_dir)[0]["provider"], "anthropic")
+
+    def test_classify_anthropic_incomplete_page_raises(self) -> None:
+        payload = self._anthropic_costs_payload("100")
+        payload["has_more"] = True
+        payload["next_page"] = "tok"
+        with self.assertRaisesRegex(tool.CliError, "incomplete"):
+            tool.classify_provider_export(payload)
+
+    def test_classify_anthropic_empty_report(self) -> None:
+        empty = {"data": [], "has_more": False, "next_page": None}
+        self.assertEqual(tool.classify_provider_export(empty), "anthropic_empty")
+        empty_results = {
+            "data": [{"starting_at": "2026-06-18T00:00:00Z", "ending_at": "2026-06-19T00:00:00Z", "results": []}],
+            "has_more": False,
+            "next_page": None,
+        }
+        self.assertEqual(tool.classify_provider_export(empty_results), "anthropic_empty")
+        with tempfile.TemporaryDirectory() as inner:
+            sample = Path(inner) / "empty.json"
+            sample.write_text(json.dumps(empty), encoding="utf-8")
+            # Recognized (True) with 0 records, so the watcher marks it imported and stops rescanning.
+            self.assertEqual(tool.import_file_by_type(Path(inner) / "data", sample), (True, 0))
+
+    def test_fetch_anthropic_imports_admin_usage_and_costs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            calls = []
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                calls.append((base_url, endpoint, dict(params), api_key))
+                self.assertEqual(base_url, "https://api.anthropic.com/v1")
+                self.assertEqual(api_key, "sk-ant-admin-test")
+                self.assertEqual(params["starting_at"], "2026-06-18T00:00:00Z")
+                self.assertEqual(params["ending_at"], "2026-06-19T00:00:00Z")
+                if endpoint == "/organizations/usage_report/messages":
+                    self.assertEqual(params["group_by"], ["model"])
+                    return {
+                        "data": [
+                            {
+                                "starting_at": "2026-06-18T00:00:00Z",
+                                "ending_at": "2026-06-19T00:00:00Z",
+                                "results": [
+                                    {
+                                        "uncached_input_tokens": 100,
+                                        "cache_read_input_tokens": 20,
+                                        "output_tokens": 30,
+                                        "model": "claude-opus-4-6",
+                                    }
+                                ],
+                            }
+                        ],
+                        "has_more": False,
+                        "next_page": None,
+                    }
+                if endpoint == "/organizations/cost_report":
+                    self.assertEqual(params["bucket_width"], "1d")
+                    self.assertEqual(params["group_by"], ["description"])
+                    return {
+                        "data": [
+                            {
+                                "starting_at": "2026-06-18T00:00:00Z",
+                                "ending_at": "2026-06-19T00:00:00Z",
+                                "results": [
+                                    {
+                                        "amount": "150",
+                                        "currency": "USD",
+                                        "description": "Claude Opus 4 Usage - Input Tokens",
+                                        "model": "claude-opus-4-6",
+                                    }
+                                ],
+                            }
+                        ],
+                        "has_more": False,
+                        "next_page": None,
+                    }
+                raise AssertionError(f"unexpected endpoint {endpoint}")
+
+            with mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_KEY": "sk-ant-admin-test"}), mock.patch.object(
+                tool, "anthropic_admin_get_json", side_effect=fake_get_json
+            ):
+                code = self.run_cli(data_dir, "fetch-anthropic", "--from", "2026-06-18", "--to", "2026-06-19")
+
+            self.assertEqual(code, 0)
+            self.assertEqual(
+                [call[1] for call in calls],
+                ["/organizations/usage_report/messages", "/organizations/cost_report"],
+            )
+            records = tool.read_ledger(data_dir)
+            self.assertEqual([r["kind"] for r in records], ["provider_usage_bucket", "provider_cost_bucket"])
+            self.assertTrue(all(r["provider"] == "anthropic" for r in records))
+            self.assertEqual(records[0]["usage"]["input_tokens"], 120)
+            self.assertEqual(records[0]["usage"]["tokens_consumed"], 150)
+            self.assertEqual(records[1]["billing"]["actual_cost_usd"], "1.5")
+            self.assertEqual(len(list((data_dir / "anthropic-exports").glob("anthropic-*.json"))), 2)
+
+    def test_fetch_anthropic_requires_api_key(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            with mock.patch.dict(os.environ, {}, clear=True):
+                code = self.run_cli(data_dir, "fetch-anthropic", "--from", "2026-06-18", "--to", "2026-06-19")
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_fetch_anthropic_rejects_incomplete_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+
+            def fake_get_json(base_url: str, endpoint: str, params: dict[str, object], api_key: str) -> object:
+                return {"data": [], "has_more": True, "next_page": None}
+
+            with mock.patch.dict(os.environ, {"ANTHROPIC_ADMIN_KEY": "sk-ant-admin-test"}), mock.patch.object(
+                tool, "anthropic_admin_get_json", side_effect=fake_get_json
+            ):
+                code = self.run_cli(
+                    data_dir, "fetch-anthropic", "--kind", "costs", "--from", "2026-06-18", "--to", "2026-06-19"
+                )
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_version_flag_reports_version(self) -> None:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer), self.assertRaises(SystemExit) as ctx:
+            tool.main(["--version"])
+        self.assertEqual(ctx.exception.code, 0)
+        self.assertIn(tool.__version__, buffer.getvalue())
+
+    def test_version_attribute_is_nonempty_string(self) -> None:
+        self.assertIsInstance(tool.__version__, str)
+        self.assertTrue(tool.__version__.strip())
+
+
 if __name__ == "__main__":
     unittest.main()

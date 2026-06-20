@@ -4073,10 +4073,8 @@ def resolve_oneshots(args: argparse.Namespace) -> list[dict[str, Any]]:
     if getattr(args, "ids", None):
         ids = [piece.strip() for piece in args.ids.split(",") if piece.strip()]
         return [get_oneshot(one) for one in ids]
-    if getattr(args, "all", False):
-        selected = list(ONESHOTS)
-    else:
-        selected = list(ONESHOTS)
+    # The whole library is the default; --all is an explicit alias for it.
+    selected = list(ONESHOTS)
     category = getattr(args, "category", None)
     if category:
         selected = [entry for entry in selected if entry["category"] == category]

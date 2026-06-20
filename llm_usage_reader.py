@@ -31,6 +31,8 @@ from typing import Any, Iterable, Iterator
 
 SCHEMA_VERSION = 1
 OPENAI_API_BASE_URL = "https://api.openai.com/v1"
+OPENAI_USAGE_COMPLETIONS_OBJECT = "organization.usage.completions.result"
+OPENAI_COSTS_OBJECT = "organization.costs.result"
 DEFAULT_DATA_DIR = Path("data")
 DEFAULT_LEDGER = Path("usage-ledger.jsonl")
 DEFAULT_LOCK = Path("usage-ledger.lock")
@@ -96,6 +98,13 @@ HOST_STRING_FIELDS = (
     "processor",
     "python",
     "executable",
+)
+HOST_OPTIONAL_STRING_FIELDS = ("shell", "client")
+CLIENT_ENV_VAR = "LLM_USAGE_CLIENT"
+SHELL_ENV_VAR = "LLM_USAGE_SHELL"
+CLIENT_ARG_HELP = (
+    "Agent/tool that produced the run, e.g. claude-desktop, grok-cli, codex, "
+    f"antigravity (falls back to the {CLIENT_ENV_VAR} environment variable)"
 )
 OPENAI_USAGE_METRIC_FIELDS = {
     "input_tokens",
@@ -893,6 +902,16 @@ def validate_ledger_host(host: dict[str, Any], path: Path, line_no: int) -> None
     for field in HOST_STRING_FIELDS:
         if not isinstance(host.get(field), str):
             raise ledger_record_error(path, line_no, f"field 'host.{field}' must be a string")
+    for field in HOST_OPTIONAL_STRING_FIELDS:
+        value = host.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value:
+            raise ledger_record_error(path, line_no, f"field 'host.{field}' must be a non-empty string or null")
+        if value != value.strip():
+            raise ledger_record_error(
+                path, line_no, f"field 'host.{field}' must not have leading or trailing whitespace"
+            )
 
 
 def validate_ledger_schema_version(record: dict[str, Any], path: Path, line_no: int) -> None:
@@ -994,19 +1013,19 @@ def validate_provider_export_kind(record: dict[str, Any], source: dict[str, Any]
             "field 'provider' must be openai when source.type is provider_export",
         )
     if kind == "provider_usage_bucket":
-        if not isinstance(provider_object, str) or not provider_object.startswith("organization.usage."):
+        if provider_object != OPENAI_USAGE_COMPLETIONS_OBJECT:
             raise ledger_record_error(
                 path,
                 line_no,
-                "field 'source.provider_object' must be an organization.usage.* object for provider_usage_bucket",
+                f"field 'source.provider_object' must be {OPENAI_USAGE_COMPLETIONS_OBJECT} for provider_usage_bucket",
             )
         return
     if kind == "provider_cost_bucket":
-        if provider_object != "organization.costs.result":
+        if provider_object != OPENAI_COSTS_OBJECT:
             raise ledger_record_error(
                 path,
                 line_no,
-                "field 'source.provider_object' must be organization.costs.result for provider_cost_bucket",
+                f"field 'source.provider_object' must be {OPENAI_COSTS_OBJECT} for provider_cost_bucket",
             )
         return
     raise ledger_record_error(path, line_no, "field 'source.type' cannot be provider_export unless kind is a provider bucket")
@@ -1161,7 +1180,31 @@ def read_ledger(data_dir: Path) -> list[dict[str, Any]]:
     return records
 
 
-def system_snapshot() -> dict[str, Any]:
+def detect_shell() -> str | None:
+    """Best-effort detection of the shell that invoked this process.
+
+    Honors an explicit ``LLM_USAGE_SHELL`` override first, so a harness can
+    record the true shell reliably. Otherwise POSIX shells (including Git Bash
+    on Windows) export ``SHELL``, and PowerShell 6+ (pwsh) sets
+    ``POWERSHELL_DISTRIBUTION_CHANNEL`` which cmd.exe never does. On native
+    Windows shells the environment cannot reliably distinguish cmd.exe from
+    Windows PowerShell 5.1 (``PSModulePath``/``ComSpec`` are inherited by every
+    shell), so this returns ``None`` rather than guessing. ``host.os`` still
+    records the operating system; set ``LLM_USAGE_SHELL`` to capture the shell
+    explicitly when it matters.
+    """
+    override = os.environ.get(SHELL_ENV_VAR)
+    if override and override.strip():
+        return override.strip()
+    shell = os.environ.get("SHELL")
+    if shell and shell.strip():
+        return Path(shell.strip()).name or None
+    if os.environ.get("POWERSHELL_DISTRIBUTION_CHANNEL"):
+        return "powershell"
+    return None
+
+
+def system_snapshot(client: str | None = None) -> dict[str, Any]:
     return {
         "hostname": platform.node(),
         "os": platform.system(),
@@ -1171,6 +1214,8 @@ def system_snapshot() -> dict[str, Any]:
         "processor": platform.processor(),
         "python": platform.python_version(),
         "executable": sys.executable,
+        "shell": detect_shell(),
+        "client": client,
     }
 
 
@@ -1274,6 +1319,24 @@ def normalize_cli_model(model: str | None) -> str | None:
     return normalized
 
 
+def resolve_client(args: argparse.Namespace) -> str | None:
+    """Resolve the agent/tool that produced a run.
+
+    Precedence: an explicit ``--client`` flag, then the ``LLM_USAGE_CLIENT``
+    environment variable (so a harness can set it once), then ``None``.
+    """
+    explicit = getattr(args, "client", None)
+    if explicit is not None:
+        stripped = explicit.strip()
+        if not stripped:
+            raise CliError("--client must be a non-empty string when provided")
+        return stripped
+    env_value = os.environ.get(CLIENT_ENV_VAR)
+    if env_value is not None and env_value.strip():
+        return env_value.strip()
+    return None
+
+
 def make_record(
     *,
     kind: str,
@@ -1289,6 +1352,7 @@ def make_record(
     run_id: str | None = None,
     exit_code: int | None = None,
     notes: str | None = None,
+    client: str | None = None,
 ) -> dict[str, Any]:
     duration_ms = max(0, int((finished_at - started_at).total_seconds() * 1000))
     source = {"type": source_type}
@@ -1327,7 +1391,7 @@ def make_record(
             "source": "unavailable",
         },
         "source": source,
-        "host": system_snapshot(),
+        "host": system_snapshot(client),
         "notes": notes,
         "created_at": to_iso(now_utc()),
     }
@@ -1376,7 +1440,7 @@ def command_start(args: argparse.Namespace) -> int:
             "started_at": to_iso(started_at),
             "status": "running",
             "source": {"type": "local_recorder"},
-            "host": system_snapshot(),
+            "host": system_snapshot(resolve_client(args)),
             "notes": args.notes,
             "created_at": to_iso(now_utc()),
         }
@@ -1438,6 +1502,13 @@ def command_finish(args: argparse.Namespace) -> int:
         else:
             model = normalize_model(run.get("model"))
         exit_code = positive_int_or_none(args.exit_code, "--exit-code") if args.exit_code is not None else None
+        client = resolve_client(args)
+        if client is None:
+            existing_host = run.get("host")
+            if isinstance(existing_host, dict):
+                start_client = existing_host.get("client")
+                if isinstance(start_client, str) and start_client.strip():
+                    client = start_client.strip()
         record = make_record(
             kind="run",
             provider=provider,
@@ -1452,6 +1523,7 @@ def command_finish(args: argparse.Namespace) -> int:
             run_id=run_id,
             exit_code=exit_code,
             notes=args.notes or run.get("notes"),
+            client=client,
         )
         append_ledger(data_dir, [record])
         run["status"] = record["status"]
@@ -1488,6 +1560,7 @@ def command_record(args: argparse.Namespace) -> int:
             run_id=run_id,
             exit_code=exit_code,
             notes=args.notes,
+            client=resolve_client(args),
         )
         append_ledger(args.data_dir, [record])
     print(json.dumps({"appended": 1, "record_id": record["record_id"], "ledger": str(ledger_path(args.data_dir))}, indent=2))
@@ -1507,6 +1580,7 @@ def command_wrap(args: argparse.Namespace) -> int:
         raise CliError(f"--cwd must be an existing directory: {cwd}")
     provider = validate_provider(args.provider)
     model = normalize_cli_model(args.model)
+    client = resolve_client(args)
     run_id = validate_run_id(args.run_id) if args.run_id else new_id("run")
     with exclusive_file_lock(run_lock_path(args.data_dir, run_id)):
         if run_state_path(args.data_dir, run_id).exists():
@@ -1538,6 +1612,7 @@ def command_wrap(args: argparse.Namespace) -> int:
                 run_id=run_id,
                 exit_code=exit_code,
                 notes=args.notes or str(exc),
+                client=client,
             )
             record["duration_ms"] = duration_ms
             record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"
@@ -1572,6 +1647,7 @@ def command_wrap(args: argparse.Namespace) -> int:
             run_id=run_id,
             exit_code=exit_code,
             notes=notes,
+            client=client,
         )
         record["duration_ms"] = duration_ms
         record["usage"]["unavailable_reason"] = "no usage telemetry source was attached to this wrapped command"
@@ -1884,8 +1960,12 @@ def openai_result_object(result: dict[str, Any]) -> str:
     value = result.get("object")
     if not isinstance(value, str) or not value:
         raise CliError("OpenAI bucket result field 'object' must be a non-empty string")
-    if value.startswith("organization.usage.") or value == "organization.costs.result":
+    if value in {OPENAI_USAGE_COMPLETIONS_OBJECT, OPENAI_COSTS_OBJECT}:
         return value
+    if value.startswith("organization.usage."):
+        raise CliError(
+            f"unsupported OpenAI usage result object {value!r}; only {OPENAI_USAGE_COMPLETIONS_OBJECT!r} is supported"
+        )
     raise CliError(f"unsupported OpenAI bucket result object {value!r}")
 
 
@@ -1899,7 +1979,7 @@ def collect_openai_usage_rows(payload: Any) -> list[dict[str, Any]]:
             if not isinstance(result, dict):
                 raise CliError("OpenAI usage result must be an object")
             object_name = openai_result_object(result)
-            if not object_name.startswith("organization.usage."):
+            if object_name != OPENAI_USAGE_COMPLETIONS_OBJECT:
                 saw_cost_result = True
                 continue
             usage = normalize_openai_usage_result(result)
@@ -1983,7 +2063,7 @@ def collect_openai_cost_rows(payload: Any) -> list[dict[str, Any]]:
             if not isinstance(result, dict):
                 raise CliError("OpenAI cost result must be an object")
             object_name = openai_result_object(result)
-            if object_name != "organization.costs.result":
+            if object_name != OPENAI_COSTS_OBJECT:
                 saw_usage_result = True
                 continue
             cost, currency = strict_openai_cost_amount(result)
@@ -2033,7 +2113,7 @@ def build_openai_cost_records(path: Path, notes: str | None) -> list[dict[str, A
                 source_type="provider_export",
                 source_detail={
                     **detail,
-                    "provider_object": "organization.costs.result",
+                    "provider_object": OPENAI_COSTS_OBJECT,
                     "import_key": provider_import_key(
                         "openai",
                         "provider_cost_bucket",
@@ -2456,8 +2536,8 @@ def classify_provider_export(payload: Any) -> str | None:
             if not isinstance(result, dict):
                 raise CliError("OpenAI bucket result must be an object")
             obj = openai_result_object(result)
-            saw_usage = saw_usage or obj.startswith("organization.usage.")
-            saw_cost = saw_cost or obj == "organization.costs.result"
+            saw_usage = saw_usage or obj == OPENAI_USAGE_COMPLETIONS_OBJECT
+            saw_cost = saw_cost or obj == OPENAI_COSTS_OBJECT
     if saw_usage and not saw_cost:
         return "openai_usage"
     if saw_cost and not saw_usage:
@@ -2534,6 +2614,87 @@ def command_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def summarize_ledger_health(records: list[dict[str, Any]], data_dir: Path) -> dict[str, Any]:
+    source_type_counts: dict[str, int] = {}
+    kind_counts: dict[str, int] = {}
+    provider_counts: dict[str, int] = {}
+    status_counts: dict[str, int] = {}
+    run_ids: set[str] = set()
+    provider_export_records = 0
+    manual_records = 0
+    trusted_records = 0
+    earliest: dt.datetime | None = None
+    latest: dt.datetime | None = None
+    for record in records:
+        source_type = str((record.get("source") or {}).get("type") or "unknown")
+        source_type_counts[source_type] = source_type_counts.get(source_type, 0) + 1
+        kind = str(record.get("kind") or "unknown")
+        kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        provider = str(record.get("provider") or "unknown")
+        provider_counts[provider] = provider_counts.get(provider, 0) + 1
+        status = str(record.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+        if source_type == "provider_export":
+            provider_export_records += 1
+        if source_type in MANUAL_SOURCE_TYPES:
+            manual_records += 1
+        if source_type not in TRUSTED_EXCLUDED_SOURCE_TYPES:
+            trusted_records += 1
+        run_id = ledger_run_id(record)
+        if run_id is not None:
+            run_ids.add(run_id)
+        started_at = parse_time(record.get("started_at"))
+        finished_at = parse_time(record.get("finished_at"))
+        if earliest is None or started_at < earliest:
+            earliest = started_at
+        if latest is None or finished_at > latest:
+            latest = finished_at
+    return {
+        "ledger": str(ledger_path(data_dir)),
+        "records": len(records),
+        "earliest_started_at": to_iso(earliest) if earliest is not None else None,
+        "latest_finished_at": to_iso(latest) if latest is not None else None,
+        "source_type_counts": source_type_counts,
+        "kind_counts": kind_counts,
+        "provider_counts": provider_counts,
+        "status_counts": status_counts,
+        "provider_export_records": provider_export_records,
+        "manual_records": manual_records,
+        "trusted_records": trusted_records,
+        "distinct_run_ids": len(run_ids),
+    }
+
+
+def print_verify_report(report: dict[str, Any]) -> None:
+    print(f"Ledger: {report['ledger']}")
+    print(f"Status: OK ({report['records']} record(s) verified)")
+    if not report["records"]:
+        print("Ledger is empty.")
+        return
+    print(f"Period: {report['earliest_started_at']} to {report['latest_finished_at']}")
+    print(
+        "Records: "
+        f"provider_export={report['provider_export_records']} "
+        f"manual={report['manual_records']} "
+        f"trusted={report['trusted_records']} "
+        f"distinct_run_ids={report['distinct_run_ids']}"
+    )
+    print(f"By source type: {json.dumps(report['source_type_counts'], sort_keys=True)}")
+    print(f"By kind: {json.dumps(report['kind_counts'], sort_keys=True)}")
+    print(f"By provider: {json.dumps(report['provider_counts'], sort_keys=True)}")
+    print(f"By status: {json.dumps(report['status_counts'], sort_keys=True)}")
+
+
+def command_verify(args: argparse.Namespace) -> int:
+    records = read_ledger(args.data_dir)
+    report = summarize_ledger_health(records, args.data_dir)
+    if args.json:
+        print(json.dumps({"ok": True, **report}, indent=2, sort_keys=True))
+    else:
+        print_verify_report(report)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Record, import, and summarize LLM token usage and cost evidence.",
@@ -2551,6 +2712,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--provider", default="unknown", help="Provider name, e.g. openai")
     start.add_argument("--model", help="Model name if known")
     start.add_argument("--started-at", help="UTC ISO time, epoch seconds, YYYY-MM-DD, or now")
+    start.add_argument("--client", help=CLIENT_ARG_HELP)
     start.add_argument("--notes", help="Free-form note")
     start.set_defaults(func=command_start)
 
@@ -2560,6 +2722,7 @@ def build_parser() -> argparse.ArgumentParser:
     finish.add_argument("--model", help="Override model")
     finish.add_argument("--finished-at", help="UTC ISO time, epoch seconds, YYYY-MM-DD, or now")
     finish.add_argument("--exit-code", help="Process/verification exit code")
+    finish.add_argument("--client", help=CLIENT_ARG_HELP)
     finish.add_argument("--notes", help="Free-form note")
     add_usage_arguments(finish)
     finish.set_defaults(func=command_finish)
@@ -2572,6 +2735,7 @@ def build_parser() -> argparse.ArgumentParser:
     record.add_argument("--finished-at", help="UTC ISO time, epoch seconds, YYYY-MM-DD, or now")
     record.add_argument("--status", choices=["completed", "failed", "incomplete"])
     record.add_argument("--exit-code", help="Process/verification exit code")
+    record.add_argument("--client", help=CLIENT_ARG_HELP)
     record.add_argument("--notes", help="Free-form note")
     add_usage_arguments(record)
     record.set_defaults(func=command_record)
@@ -2581,11 +2745,15 @@ def build_parser() -> argparse.ArgumentParser:
     wrap.add_argument("--model", help="Model name if known")
     wrap.add_argument("--run-id", help="Optional run id")
     wrap.add_argument("--cwd", help="Working directory for wrapped command")
+    wrap.add_argument("--client", help=CLIENT_ARG_HELP)
     wrap.add_argument("--notes", help="Free-form note")
     wrap.add_argument("command", nargs=argparse.REMAINDER, help="Command to run after --")
     wrap.set_defaults(func=command_wrap)
 
-    imp_usage = sub.add_parser("import-openai-usage", help="Import an OpenAI organization usage JSON response/export")
+    imp_usage = sub.add_parser(
+        "import-openai-usage",
+        help="Import an OpenAI organization completions usage JSON response/export",
+    )
     imp_usage.add_argument("--file", required=True, type=Path)
     imp_usage.add_argument("--default-model", help="Model name to use when the export was not grouped by model")
     imp_usage.add_argument("--notes", help="Free-form note")
@@ -2638,6 +2806,10 @@ def build_parser() -> argparse.ArgumentParser:
     show = sub.add_parser("show", help="Print ledger records")
     show.add_argument("--limit", type=int, default=10)
     show.set_defaults(func=command_show)
+
+    verify = sub.add_parser("verify", help="Verify ledger integrity and print a health summary")
+    verify.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    verify.set_defaults(func=command_verify)
     return parser
 
 

@@ -1,4 +1,6 @@
 import concurrent.futures
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -3576,6 +3578,39 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(tool.read_ledger(data_dir), [])
 
+    def test_openai_usage_import_rejects_unsupported_usage_result_family(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            sample = Path(tmp) / "usage.json"
+            sample.write_text(
+                json.dumps(
+                    {
+                        "object": "page",
+                        "data": [
+                            {
+                                "object": "bucket",
+                                "start_time": 1781740800,
+                                "end_time": 1781827200,
+                                "results": [
+                                    {
+                                        "object": "organization.usage.images.result",
+                                        "images": 2,
+                                        "num_model_requests": 1,
+                                        "model": "gpt-image-1",
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            code = self.run_cli(data_dir, "import-openai-usage", "--file", str(sample))
+
+            self.assertEqual(code, 2)
+            self.assertEqual(tool.read_ledger(data_dir), [])
+
     def test_openai_usage_import_rejects_usage_result_without_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
@@ -6854,6 +6889,432 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(records[0]["exit_code"], 137)
             self.assertIn("signal 9", records[0]["notes"])
             self.assertEqual(records[0]["record_hash"], tool.record_hash(records[0]))
+
+
+    def _record_sample(self, data_dir: Path, started: str, finished: str) -> None:
+        self.assertEqual(
+            self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--model",
+                "gpt-5.4",
+                "--started-at",
+                started,
+                "--finished-at",
+                finished,
+                "--input-tokens",
+                "100",
+                "--output-tokens",
+                "25",
+            ),
+            0,
+        )
+
+    def test_verify_empty_ledger_is_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = self.run_cli(data_dir, "verify")
+            self.assertEqual(code, 0)
+            self.assertIn("0 record(s) verified", buffer.getvalue())
+            self.assertIn("Ledger is empty.", buffer.getvalue())
+
+    def test_verify_reports_health_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self._record_sample(data_dir, "2026-06-18T20:00:00Z", "2026-06-18T20:01:00Z")
+            self._record_sample(data_dir, "2026-06-18T21:00:00Z", "2026-06-18T21:02:00Z")
+
+            records = tool.read_ledger(data_dir)
+            report = tool.summarize_ledger_health(records, data_dir)
+            self.assertEqual(report["records"], 2)
+            self.assertEqual(sum(report["source_type_counts"].values()), 2)
+            self.assertEqual(report["source_type_counts"]["manual_attestation"], 2)
+            self.assertEqual(report["kind_counts"]["run"], 2)
+            self.assertEqual(report["provider_counts"]["openai"], 2)
+            self.assertEqual(report["manual_records"], 2)
+            self.assertEqual(report["trusted_records"], 0)
+            self.assertEqual(report["earliest_started_at"], "2026-06-18T20:00:00Z")
+            self.assertEqual(report["latest_finished_at"], "2026-06-18T21:02:00Z")
+            self.assertEqual(report["ledger"], str(tool.ledger_path(data_dir)))
+
+    def test_verify_json_output_is_machine_readable(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self._record_sample(data_dir, "2026-06-18T20:00:00Z", "2026-06-18T20:01:00Z")
+            buffer = io.StringIO()
+            with contextlib.redirect_stdout(buffer):
+                code = self.run_cli(data_dir, "verify", "--json")
+            self.assertEqual(code, 0)
+            payload = json.loads(buffer.getvalue())
+            self.assertTrue(payload["ok"])
+            self.assertEqual(payload["records"], 1)
+            self.assertEqual(payload["manual_records"], 1)
+
+    def test_verify_rejects_tampered_ledger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self._record_sample(data_dir, "2026-06-18T20:00:00Z", "2026-06-18T20:01:00Z")
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["usage"]["tokens_consumed"] = 999
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            code = self.run_cli(data_dir, "verify")
+            self.assertEqual(code, 2)
+
+
+    def test_detect_shell_prefers_explicit_override(self) -> None:
+        with mock.patch.dict(os.environ, {tool.SHELL_ENV_VAR: "pwsh", "SHELL": "/bin/bash"}, clear=True):
+            self.assertEqual(tool.detect_shell(), "pwsh")
+
+    def test_detect_shell_uses_shell_basename(self) -> None:
+        with mock.patch.dict(os.environ, {"SHELL": "/usr/bin/zsh"}, clear=True):
+            self.assertEqual(tool.detect_shell(), "zsh")
+
+    def test_detect_shell_windows_powershell_distribution_channel(self) -> None:
+        with mock.patch.dict(
+            os.environ, {"POWERSHELL_DISTRIBUTION_CHANNEL": "MSI:Windows 10 Pro"}, clear=True
+        ):
+            self.assertEqual(tool.detect_shell(), "powershell")
+
+    def test_detect_shell_windows_cmd_is_not_mislabeled_powershell(self) -> None:
+        # A real cmd.exe session inherits PSModulePath and ComSpec machine-wide but
+        # sets no PowerShell-specific signal, so detection must not guess "powershell".
+        with mock.patch.dict(
+            os.environ,
+            {
+                "PSModulePath": "C:/Program Files/WindowsPowerShell/Modules",
+                "ComSpec": "C:/Windows/System32/cmd.exe",
+            },
+            clear=True,
+        ):
+            self.assertIsNone(tool.detect_shell())
+
+    def test_detect_shell_unknown_returns_none(self) -> None:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIsNone(tool.detect_shell())
+
+    def test_record_host_has_provenance_keys_defaulting_to_null_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    self.run_cli(
+                        data_dir,
+                        "record",
+                        "--provider",
+                        "anthropic",
+                        "--model",
+                        "claude-opus-4-8",
+                        "--started-at",
+                        "2026-06-18T20:00:00Z",
+                        "--finished-at",
+                        "2026-06-18T20:01:00Z",
+                        "--input-tokens",
+                        "100",
+                    ),
+                    0,
+                )
+            record = tool.read_ledger(data_dir)[0]
+            self.assertIn("shell", record["host"])
+            self.assertIn("client", record["host"])
+            self.assertIsNone(record["host"]["client"])
+            self.assertEqual(record["record_hash"], tool.record_hash(record))
+
+    def test_record_captures_client_from_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "xai",
+                    "--model",
+                    "grok-4",
+                    "--client",
+                    "grok-cli",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "100",
+                ),
+                0,
+            )
+            self.assertEqual(tool.read_ledger(data_dir)[0]["host"]["client"], "grok-cli")
+
+    def test_record_captures_client_from_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            with mock.patch.dict(os.environ, {tool.CLIENT_ENV_VAR: "codex"}):
+                self.assertEqual(
+                    self.run_cli(
+                        data_dir,
+                        "record",
+                        "--provider",
+                        "openai",
+                        "--model",
+                        "gpt-5.4",
+                        "--started-at",
+                        "2026-06-18T20:00:00Z",
+                        "--finished-at",
+                        "2026-06-18T20:01:00Z",
+                        "--input-tokens",
+                        "100",
+                    ),
+                    0,
+                )
+            self.assertEqual(tool.read_ledger(data_dir)[0]["host"]["client"], "codex")
+
+    def test_client_flag_overrides_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            with mock.patch.dict(os.environ, {tool.CLIENT_ENV_VAR: "from-env"}):
+                self.assertEqual(
+                    self.run_cli(
+                        data_dir,
+                        "record",
+                        "--provider",
+                        "openai",
+                        "--model",
+                        "gpt-5.4",
+                        "--client",
+                        "from-flag",
+                        "--started-at",
+                        "2026-06-18T20:00:00Z",
+                        "--finished-at",
+                        "2026-06-18T20:01:00Z",
+                        "--input-tokens",
+                        "100",
+                    ),
+                    0,
+                )
+            self.assertEqual(tool.read_ledger(data_dir)[0]["host"]["client"], "from-flag")
+
+    def test_blank_client_flag_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "record",
+                "--provider",
+                "openai",
+                "--client",
+                "   ",
+                "--started-at",
+                "2026-06-18T20:00:00Z",
+                "--finished-at",
+                "2026-06-18T20:01:00Z",
+                "--input-tokens",
+                "100",
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(len(tool.read_ledger(data_dir)), 0)
+
+    def test_wrap_captures_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            code = self.run_cli(
+                data_dir,
+                "wrap",
+                "--provider",
+                "google",
+                "--model",
+                "gemini-3-pro",
+                "--client",
+                "antigravity",
+                "--",
+                sys.executable,
+                "--version",
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(tool.read_ledger(data_dir)[0]["host"]["client"], "antigravity")
+
+    def test_start_finish_persists_client_from_start(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    "run_client_persist",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--client",
+                    "codex",
+                ),
+                0,
+            )
+            self.assertEqual(
+                self.run_cli(data_dir, "finish", "--run-id", "run_client_persist", "--input-tokens", "100"),
+                0,
+            )
+            self.assertEqual(tool.read_ledger(data_dir)[0]["host"]["client"], "codex")
+
+    def test_finish_client_flag_overrides_start_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {}, clear=True):
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "start",
+                    "--run-id",
+                    "run_client_override",
+                    "--provider",
+                    "openai",
+                    "--client",
+                    "codex",
+                ),
+                0,
+            )
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "finish",
+                    "--run-id",
+                    "run_client_override",
+                    "--client",
+                    "codex-cli",
+                    "--input-tokens",
+                    "100",
+                ),
+                0,
+            )
+            self.assertEqual(tool.read_ledger(data_dir)[0]["host"]["client"], "codex-cli")
+
+    def test_finish_env_client_overrides_start_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            with mock.patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(
+                    self.run_cli(
+                        data_dir,
+                        "start",
+                        "--run-id",
+                        "run_env_override",
+                        "--provider",
+                        "openai",
+                        "--client",
+                        "codex",
+                    ),
+                    0,
+                )
+            with mock.patch.dict(os.environ, {tool.CLIENT_ENV_VAR: "env-harness"}):
+                self.assertEqual(
+                    self.run_cli(data_dir, "finish", "--run-id", "run_env_override", "--input-tokens", "100"),
+                    0,
+                )
+            self.assertEqual(tool.read_ledger(data_dir)[0]["host"]["client"], "env-harness")
+
+    def test_read_ledger_rejects_hash_valid_nonstring_host_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--client",
+                    "codex",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "100",
+                ),
+                0,
+            )
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["host"]["client"] = 123
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "host.client"):
+                tool.read_ledger(data_dir)
+
+    def test_read_ledger_rejects_hash_valid_unstripped_host_shell(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            self.assertEqual(
+                self.run_cli(
+                    data_dir,
+                    "record",
+                    "--provider",
+                    "openai",
+                    "--model",
+                    "gpt-5.4",
+                    "--started-at",
+                    "2026-06-18T20:00:00Z",
+                    "--finished-at",
+                    "2026-06-18T20:01:00Z",
+                    "--input-tokens",
+                    "100",
+                ),
+                0,
+            )
+            ledger = tool.ledger_path(data_dir)
+            record = json.loads(ledger.read_text(encoding="utf-8"))
+            record["host"]["shell"] = " bash "
+            tool.refresh_record_hash(record)
+            ledger.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(tool.CliError, "host.shell"):
+                tool.read_ledger(data_dir)
+
+    def test_multi_provider_runs_recorded_with_client(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            cases = [
+                ("anthropic", "claude-opus-4-8", "claude-desktop"),
+                ("xai", "grok-4", "grok-cli"),
+                ("google", "gemini-3-pro", "antigravity"),
+                ("openai", "gpt-5.4", "codex"),
+            ]
+            for index, (provider, model, client) in enumerate(cases):
+                self.assertEqual(
+                    self.run_cli(
+                        data_dir,
+                        "record",
+                        "--provider",
+                        provider,
+                        "--model",
+                        model,
+                        "--client",
+                        client,
+                        "--started-at",
+                        f"2026-06-18T20:0{index}:00Z",
+                        "--finished-at",
+                        f"2026-06-18T20:0{index}:30Z",
+                        "--input-tokens",
+                        "10",
+                        "--output-tokens",
+                        "5",
+                    ),
+                    0,
+                )
+            records = tool.read_ledger(data_dir)
+            by_provider = {record["provider"]: record for record in records}
+            self.assertEqual(set(by_provider), {"anthropic", "xai", "google", "openai"})
+            self.assertEqual(by_provider["anthropic"]["host"]["client"], "claude-desktop")
+            self.assertEqual(by_provider["xai"]["host"]["client"], "grok-cli")
+            self.assertEqual(by_provider["google"]["model"], "gemini-3-pro")
+            for record in records:
+                self.assertIn("shell", record["host"])
+                self.assertEqual(record["record_hash"], tool.record_hash(record))
 
 
 if __name__ == "__main__":

@@ -7,7 +7,8 @@ It is built around the main point from `suggestions-20260618.md`: do not ask the
 ## What It Can Track
 
 - Start time, finish time, duration, provider, model, exit code, and host details for local runs.
-- Imported OpenAI organization usage buckets, including model name when the export was grouped by model.
+- The agent/tool that produced a run (for example `claude-desktop`, `grok-cli`, `codex`, or `antigravity`) and a best-effort shell name, captured under `host.client` and `host.shell`.
+- Imported OpenAI organization completions usage buckets, including model name when the export was grouped by model.
 - Imported OpenAI organization cost buckets.
 - Direct OpenAI Admin API usage/cost fetches for a requested period when `OPENAI_ADMIN_KEY` is available.
 - Idempotent OpenAI imports that skip previously imported bucket rows.
@@ -54,7 +55,18 @@ Wrap any command to capture machine-observed start/finish/duration:
 python .\llm_usage_reader.py wrap --provider local --model unknown -- python --version
 ```
 
-Import OpenAI organization usage and costs JSON responses:
+`provider` and `model` are free-form, so local runs from any vendor are first-class — for example `--provider anthropic --model claude-opus-4-8`, `--provider xai --model grok-4`, `--provider google --model gemini-3-pro`, or `--provider openai --model gpt-5.4`. (Structured provider imports below are currently OpenAI-only.)
+
+Record which agent/tool produced a run with `--client` on `start`, `finish`, `record`, and `wrap`:
+
+```powershell
+python .\llm_usage_reader.py record --provider anthropic --model claude-opus-4-8 --client claude-desktop `
+  --started-at 2026-06-18T20:00:00Z --finished-at 2026-06-18T20:05:00Z --input-tokens 1200 --output-tokens 300
+```
+
+Instead of passing `--client` every time, a harness can set it once via the `LLM_USAGE_CLIENT` environment variable (the `--client` flag wins when both are present). The shell is auto-detected best-effort from `SHELL` (bash, zsh, Git Bash) or from PowerShell 6+; native Windows shells cannot be told apart reliably from the environment, so set `LLM_USAGE_SHELL` to record the shell explicitly (the operating system is always captured under `host.os`). For a `start`/`finish` pair, the client captured at `start` carries through to the finished record unless `finish` supplies its own; the precedence at finish is the `--client` flag, then an `LLM_USAGE_CLIENT` value present at finish time, then the start client.
+
+Import OpenAI organization completions usage and costs JSON responses:
 
 ```powershell
 python .\llm_usage_reader.py import-openai-usage --file .\samples\openai_usage_response.json
@@ -62,6 +74,7 @@ python .\llm_usage_reader.py import-openai-costs --file .\samples\openai_costs_r
 ```
 
 Use the matching import command for the export family; a cost-only export passed to `import-openai-usage`, or a usage-only export passed to `import-openai-costs`, is rejected rather than treated as an empty import.
+`import-openai-usage` supports `organization.usage.completions.result` rows. Other OpenAI usage result families, such as image, audio, vector store, or file-search usage, are rejected until the ledger has fields for their native units.
 Paginated OpenAI API pages must be complete before import. A page that still reports `has_more: true`, or a final page that still carries `next_page`, is rejected to avoid recording partial usage or cost evidence.
 
 Fetch OpenAI organization usage and costs directly when an admin key is present:
@@ -79,6 +92,15 @@ Summarize a period:
 python .\llm_usage_reader.py summary --from 2026-06-18 --to 2026-06-19
 python .\llm_usage_reader.py summary --last 24h --json
 ```
+
+Verify the whole ledger and print a health summary:
+
+```powershell
+python .\llm_usage_reader.py verify
+python .\llm_usage_reader.py verify --json
+```
+
+`verify` reads every record through the same validation path as the other commands, so it re-checks each `record_hash` and re-verifies provider-export source files against their recorded hashes. It exits `0` when the ledger is intact and prints a summary (record counts by source type, kind, provider, and status; the covered period; and provider-export/manual/trusted counts). It exits non-zero with an `error:` message on the first integrity problem, so it can be used as a scripted or CI integrity gate.
 
 Summaries include only records fully contained in the requested period. Records that only partially overlap the period are skipped and reported separately, because their token and billing totals cannot be safely attributed to the smaller window.
 
@@ -118,6 +140,8 @@ Each ledger record includes:
 - `billing.actual_cost_usd`
 - `source.type`
 - `record_hash`
+
+Each record also carries a `host` object describing where it ran: machine and OS details, plus a best-effort `host.shell` and an optional `host.client` naming the agent/tool that produced the run. These are covered by `record_hash`, so they cannot be altered without detection.
 
 ## Recommended Workflow
 

@@ -164,6 +164,16 @@ python .\llm_usage_reader.py watch --inbox .\data\inbox --interval 300
 
 The watcher recognizes OpenAI usage/cost exports and Anthropic Cost Report and Messages Usage Report exports; unrecognized files are left in place and skipped.
 
+Print raw ledger records as JSON for inspection or piping into other tools:
+
+```powershell
+python .\llm_usage_reader.py show
+python .\llm_usage_reader.py show --limit 50
+python .\llm_usage_reader.py show --limit 0
+```
+
+`show` prints the most recent records (oldest first within the window), defaulting to the last 10 (`--limit 10`). A larger `--limit` prints that many of the most recent records, and `--limit 0` prints the entire ledger. The output is the same JSON object stored on each ledger line, so it round-trips and can be piped into `jq` or another tool.
+
 ## Storage
 
 The default data directory is `data`.

@@ -1085,6 +1085,40 @@ class LlmUsageReaderTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertEqual(len(tool.read_ledger(data_dir)), 1)
 
+    def test_show_limit_zero_prints_all_records_and_positive_limit_caps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            for minute in range(3):
+                self.assertEqual(
+                    self.run_cli(
+                        data_dir,
+                        "record",
+                        "--provider",
+                        "openai",
+                        "--model",
+                        "gpt-5.4",
+                        "--started-at",
+                        f"2026-06-18T20:0{minute}:00Z",
+                        "--finished-at",
+                        f"2026-06-18T20:0{minute}:30Z",
+                    ),
+                    0,
+                )
+
+            all_buffer = io.StringIO()
+            with contextlib.redirect_stdout(all_buffer):
+                self.assertEqual(self.run_cli(data_dir, "show", "--limit", "0"), 0)
+            self.assertEqual(len(json.loads(all_buffer.getvalue())), 3)
+
+            capped_buffer = io.StringIO()
+            with contextlib.redirect_stdout(capped_buffer):
+                self.assertEqual(self.run_cli(data_dir, "show", "--limit", "2"), 0)
+            capped = json.loads(capped_buffer.getvalue())
+            self.assertEqual(len(capped), 2)
+            # The positive limit keeps the most recent records, oldest first.
+            self.assertEqual(capped[0]["started_at"], "2026-06-18T20:01:00Z")
+            self.assertEqual(capped[1]["started_at"], "2026-06-18T20:02:00Z")
+
     def test_read_ledger_rejects_hash_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

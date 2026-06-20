@@ -3367,6 +3367,7 @@ def command_show(args: argparse.Namespace) -> int:
     limit = args.limit
     if limit < 0:
         raise CliError("--limit must be >= 0")
+    # --limit 0 means "no limit": print the whole ledger.
     selected = records[-limit:] if limit else records
     print(json.dumps(selected, indent=2, sort_keys=True))
     return 0
@@ -3626,8 +3627,13 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("--notes", help="Free-form note applied to imported records")
     watch.set_defaults(func=command_watch)
 
-    show = sub.add_parser("show", help="Print ledger records")
-    show.add_argument("--limit", type=int, default=10)
+    show = sub.add_parser("show", help="Print ledger records as JSON")
+    show.add_argument(
+        "--limit",
+        type=int,
+        default=10,
+        help="Number of most recent records to print; 0 prints all (default: 10)",
+    )
     show.set_defaults(func=command_show)
 
     verify = sub.add_parser("verify", help="Verify ledger integrity and print a health summary")

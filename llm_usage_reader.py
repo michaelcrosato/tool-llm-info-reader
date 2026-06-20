@@ -67,6 +67,9 @@ MANUAL_BILLING_SOURCES = BILLING_SOURCES - PROVIDER_BILLING_SOURCES
 ADAPTER_EVIDENCE_SOURCE_TYPES = {"native_telemetry", "vendor_session_store", "proxy_log"}
 ADAPTER_EVIDENCE_STRING_FIELDS = ("adapter", "adapter_version")
 ADAPTER_EVIDENCE_SHA256_FIELDS = ("evidence_sha256",)
+CLAUDE_CODE_ADAPTER = "claude-code"
+CLAUDE_CODE_ADAPTER_VERSION = "1"
+CLAUDE_CODE_PROVIDER = "anthropic"
 PROVIDER_EXPORT_STRING_FIELDS = ("file", "provider_object")
 PROVIDER_EXPORT_SHA256_FIELDS = ("file_sha256", "import_key")
 PROVIDER_EXPORT_OPTIONAL_SHA256_FIELDS = ("result_identity",)
@@ -2611,6 +2614,157 @@ def command_import_anthropic_usage(args: argparse.Namespace) -> int:
     return 0
 
 
+def claude_code_usage_int(usage: dict[str, Any], field: str) -> int:
+    value = usage.get(field)
+    if value is None:
+        return 0
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise CliError(f"Claude Code usage field {field!r} must be a non-negative integer when present")
+    return value
+
+
+def normalize_claude_code_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    # Claude Code transcripts carry the same disjoint Anthropic input categories
+    # (plain input, cache read, and cache creation). Mirror the Anthropic import
+    # convention: input_tokens is the total input and cached_input_tokens is the
+    # cache-read subset.
+    plain_input = claude_code_usage_int(usage, "input_tokens")
+    cache_read = claude_code_usage_int(usage, "cache_read_input_tokens")
+    cache_creation = claude_code_usage_int(usage, "cache_creation_input_tokens")
+    output_tokens = claude_code_usage_int(usage, "output_tokens")
+    input_tokens = plain_input + cache_read + cache_creation
+    return {
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "cached_input_tokens": cache_read,
+        "input_audio_tokens": None,
+        "output_audio_tokens": None,
+        "billed_tokens": None,
+        "requests": None,
+        "tokens_consumed": sum_ints(input_tokens, output_tokens),
+    }
+
+
+def claude_code_provenance_note(entry: dict[str, Any], message_id: str) -> str:
+    parts = [f"adapter={CLAUDE_CODE_ADAPTER}"]
+    version = entry.get("version")
+    if isinstance(version, str) and version.strip():
+        parts.append(f"app_version={version.strip()}")
+    session_id = entry.get("sessionId")
+    if isinstance(session_id, str) and session_id.strip():
+        parts.append(f"session={session_id.strip()}")
+    parts.append(f"message={message_id}")
+    return " ".join(parts)
+
+
+def build_claude_code_records(path: Path, notes: str | None) -> list[dict[str, Any]]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, ValueError) as exc:
+        raise CliError(f"could not read Claude Code transcript {path}: {exc}") from exc
+    records: list[dict[str, Any]] = []
+    seen_message_ids: set[str] = set()
+    for line_no, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            entry = json.loads(stripped)
+        except json.JSONDecodeError:
+            # Transcripts interleave many record types and may end with a
+            # partially written line for an in-progress session; skip anything we
+            # cannot parse rather than failing the whole import.
+            continue
+        if not isinstance(entry, dict) or entry.get("type") != "assistant":
+            continue
+        message = entry.get("message")
+        if not isinstance(message, dict):
+            continue
+        usage = message.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        message_id = message.get("id")
+        if not isinstance(message_id, str) or not message_id:
+            continue
+        # Claude Code writes one transcript line per assistant content block (the
+        # text block and each tool_use), and every line repeats the identical
+        # message-level usage. Count each API message (message.id) exactly once to
+        # avoid multiplying the token totals.
+        if message_id in seen_message_ids:
+            continue
+        seen_message_ids.add(message_id)
+        timestamp = entry.get("timestamp")
+        if not isinstance(timestamp, str) or not timestamp.strip():
+            raise CliError(
+                f"Claude Code transcript {path}:{line_no}: assistant message {message_id} has no timestamp"
+            )
+        observed_at = parse_time(timestamp)
+        model = message.get("model")
+        if model is not None and not isinstance(model, str):
+            raise CliError(
+                f"Claude Code transcript {path}:{line_no}: message {message_id} has a non-string model"
+            )
+        identity = f"{CLAUDE_CODE_ADAPTER}:message:{message_id}"
+        record = make_record(
+            kind="run",
+            provider=CLAUDE_CODE_PROVIDER,
+            model=model,
+            started_at=observed_at,
+            finished_at=observed_at,
+            usage=normalize_claude_code_usage(usage),
+            source_type="vendor_session_store",
+            source_detail={
+                "adapter": CLAUDE_CODE_ADAPTER,
+                "adapter_version": CLAUDE_CODE_ADAPTER_VERSION,
+                "evidence_sha256": sha256_bytes(stripped.encode("utf-8")),
+                "import_key": sha256_bytes(identity.encode("utf-8")),
+            },
+            status="completed",
+            notes=notes if notes else claude_code_provenance_note(entry, message_id),
+            client=CLAUDE_CODE_ADAPTER,
+        )
+        records.append(record)
+    return records
+
+
+def resolve_claude_code_transcripts(args: argparse.Namespace) -> list[Path]:
+    if args.file is not None:
+        if not args.file.is_file():
+            raise CliError(f"--file must identify an existing transcript: {args.file}")
+        return [args.file]
+    projects_dir = args.projects_dir
+    if not projects_dir.is_dir():
+        raise CliError(f"--projects-dir must identify an existing directory: {projects_dir}")
+    return sorted(projects_dir.rglob("*.jsonl"))
+
+
+def command_import_claude_code(args: argparse.Namespace) -> int:
+    transcripts = resolve_claude_code_transcripts(args)
+    candidates: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for path in transcripts:
+        for record in build_claude_code_records(path, args.notes):
+            key = import_key(record)
+            if key is not None:
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+            candidates.append(record)
+    count = append_ledger(args.data_dir, candidates)
+    print(
+        json.dumps(
+            {
+                "appended": count,
+                "ledger": str(ledger_path(args.data_dir)),
+                "sessions": len(transcripts),
+                "messages_scanned": len(candidates),
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def command_fetch_openai(args: argparse.Namespace) -> int:
     start = parse_time(args.from_time)
     end = parse_time(args.to)
@@ -3387,6 +3541,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     imp_anthropic_usage.add_argument("--notes", help="Free-form note")
     imp_anthropic_usage.set_defaults(func=command_import_anthropic_usage)
+
+    imp_claude_code = sub.add_parser(
+        "import-claude-code",
+        help="Import token usage from local Claude Code session transcript JSONL files",
+    )
+    cc_source = imp_claude_code.add_mutually_exclusive_group(required=True)
+    cc_source.add_argument("--file", type=Path, help="A single Claude Code session transcript (.jsonl)")
+    cc_source.add_argument(
+        "--projects-dir",
+        type=Path,
+        dest="projects_dir",
+        help="A Claude Code projects directory scanned recursively for *.jsonl transcripts",
+    )
+    imp_claude_code.add_argument(
+        "--notes", help="Free-form note (overrides the default per-message provenance note)"
+    )
+    imp_claude_code.set_defaults(func=command_import_claude_code)
 
     fetch_openai = sub.add_parser("fetch-openai", help="Fetch OpenAI Admin usage/costs for a period and import them")
     fetch_openai.add_argument("--from", dest="from_time", required=True, help="UTC ISO time, epoch seconds, or YYYY-MM-DD")
